@@ -21,7 +21,7 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 
 ### 🎵 Integrated Music System
 
-  * **Versatile Playback**: Play songs from YouTube (URLs or search terms) and local files.
+  * **Versatile Playback**: Play songs from YouTube or Spotify (URLs or search terms) and local files.
   * **Interactive Queue**: View the song queue with `!q` and instantly jump to any song using a dropdown menu.
   * **Persistent Playlists**: Save the current queue as a named playlist, then load, list, or delete playlists at any time.
   * **Multiple Playback Modes**: Effortlessly cycle between **Shuffle**, **Alphabetical**, and **Loop** modes.
