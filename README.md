@@ -109,10 +109,10 @@ The bot keeps administrators informed with a robust, event-driven notification s
 
 ### 1\. Prerequisites
 
-  * **🖥️ Microsoft Edge**: Ensure the Edge browser is installed and up-to-date.
-  * **🐍 Python 3.9+**: Install from [python.org](https://www.python.org/downloads/). Make sure to check **"Add Python to PATH"** during installation.
-  * **🎵 FFmpeg**: Required for music playback. Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to your system's PATH.
-  * **📦 Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
+  * **Microsoft Edge**: Ensure the Edge browser is installed and up-to-date.
+  * **Python 3.9+**: Install from [python.org](https://www.python.org/downloads/). Make sure to check **"Add Python to PATH"** during installation.
+  * **FFmpeg**: Required for music playback. Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to your system's PATH.
+  * **Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
     ```
     pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spotipy pyautogui
     ```
