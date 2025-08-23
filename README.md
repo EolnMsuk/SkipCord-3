@@ -1,5 +1,3 @@
-Of course\! Here is the updated `README.md` file with detailed instructions for setting up Spotify API compatibility, along with other improvements based on the provided code.
-
 # SkipCord-3: 🚀 Advanced Omegle Streaming & Music Bot for Discord
 
 SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who use Omegle or similar platforms. It seamlessly integrates a shared streaming experience into a Discord voice channel, empowering the audience with control through a clean, interactive button menu. The bot features advanced moderation, detailed logging, automated rule enforcement, and a complete music system, all built on a fully asynchronous architecture for rock-solid performance.
