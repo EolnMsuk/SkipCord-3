@@ -1626,11 +1626,11 @@ class BotHelper:
                     status_lines.append(f"**Queue:** {len(queue)} song(s)")
 
             description = f"""
-**!m <song or URL>** --- Find/queue a song
-**!q** -------------------- View the queue
-**!np** ------------------- Show current song
-**!mclear** -------------- Clear the Playlist
-**!playlist <save/load>** - Manage playlists
+**!m <song or URL>** ----- Find/queue a song
+**!q** ---------------------- View the queue
+**!np** --------------------- Show current song
+**!mclear** ---------------- Clear the Playlist
+**!playlist <save/load>** -- Manage playlists
 
 *{" | ".join(status_lines)}*
 """
