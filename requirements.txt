@@ -1,8 +1,31 @@
-discord.py[voice]
-python-dotenv
-loguru
-selenium
-keyboard
-yt-dlp
-mutagen
-pyautogui
+# requirements.txt
+
+# Core Discord library
+discord.py==2.3.2
+
+# Required for voice functionality in discord.py
+PyNaCl==1.5.0
+
+# Browser automation for Omegle
+selenium==4.22.0
+
+# For streaming audio from YouTube and other sites
+yt-dlp==2023.12.30
+
+# Spotify API interaction
+spotipy==2.24.0
+
+# Reading metadata (artist, title) from local audio files
+mutagen==1.47.0
+
+# Advanced, feature-rich logging
+loguru==0.7.2
+
+# For loading credentials and config from a .env file
+python-dotenv==1.0.1
+
+# For listening to global hotkeys
+keyboard==0.13.5
+
+# For auto typing the interests out
+pyautogui==0.9.54
