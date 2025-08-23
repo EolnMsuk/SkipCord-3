@@ -1,0 +1,2706 @@
+# bot.py
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# Standard library imports
+import asyncio
+import json
+import os
+import random
+import re
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone, timedelta, time as dt_time
+from functools import wraps
+from typing import Any, Callable, Optional
+
+# Third-party imports
+import discord
+import keyboard
+import yt_dlp
+from discord.ext import commands, tasks
+from dotenv import load_dotenv
+from loguru import logger
+import mutagen
+
+
+# Local application imports
+try:
+    import config
+except ImportError:
+    logger.critical("CRITICAL: config.py not found. Please create it based on the example.")
+    sys.exit(1)
+from omegle import OmegleHandler
+from helper import BotHelper
+from tools import (
+    BotConfig,
+    BotState,
+    build_embed,
+    build_role_update_embed,
+    handle_errors,
+    record_command_usage,
+    record_command_usage_by_user,
+)
+
+# Load environment variables from the .env file
+load_dotenv()
+
+# --- VALIDATION AND INITIALIZATION ---
+# Load configuration from the config.py module into a structured dataclass
+bot_config = BotConfig.from_config_module(config)
+
+# Validate that all essential configuration variables have been set
+required_settings = [
+    'GUILD_ID', 'COMMAND_CHANNEL_ID', 'CHAT_CHANNEL_ID', 'STREAMING_VC_ID',
+    'PUNISHMENT_VC_ID', 'OMEGLE_VIDEO_URL', 'EDGE_USER_DATA_DIR'
+]
+missing_settings = [
+    setting for setting in required_settings if not getattr(bot_config, setting)
+]
+
+if missing_settings:
+    logger.critical(f"FATAL: The following required settings are missing in config.py: {', '.join(missing_settings)}")
+    logger.critical("Please fill them out before starting the bot.")
+    sys.exit(1)
+
+
+# Initialize the bot's state management object
+state = BotState(config=bot_config)
+# Initialize the handler for Selenium-based browser automation
+omegle_handler = OmegleHandler(bot_config)
+omegle_handler.state = state
+
+# Initialize the Discord bot instance with required intents
+intents = discord.Intents.default()
+intents.message_content = True  # Required for reading message content
+intents.members = True          # Required for tracking member updates (joins, roles, etc.)
+bot = commands.Bot(command_prefix="!", help_command=None, intents=intents)
+bot.state = state # Attach the state object to the bot instance for global access in cogs/decorators
+bot.voice_client_music = None # Will hold the music voice client instance
+
+# --- CONSTANTS ---
+STATE_FILE = "data.json" # File name for saving and loading the bot's state
+MUSIC_METADATA_CACHE_FILE = "music_metadata_cache.json" # File for persistent metadata
+MUSIC_METADATA_CACHE = {} # In-memory cache for song metadata (artist, title, etc.)
+
+# --- YT-DLP / FFMPEG CONFIG ---
+YDL_OPTIONS = {
+    'format': 'bestaudio/best',
+    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'restrictfilenames': True,
+    'extract_flat': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': True,
+    'logtostderr': False,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0'
+}
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn -loglevel error -af "loudnorm=I=-16:LRA=11:tp=-1.5"'
+}
+
+def get_display_title_from_path(song_path: str) -> str:
+    """
+    Gets a display-friendly title for a local song.
+    Uses "Title - Artist" from metadata if available, otherwise falls back to the filename.
+    """
+    metadata = MUSIC_METADATA_CACHE.get(song_path)
+    if metadata:
+        raw_title = metadata.get('raw_title')
+        raw_artist = metadata.get('raw_artist')
+
+        if raw_title and raw_artist:
+            return f"{raw_title} - {raw_artist}"
+        elif raw_title:
+            return raw_title
+    
+    # Fallback for missing metadata
+    return os.path.basename(song_path)
+
+
+#########################################
+# Persistence Functions
+#########################################
+
+@tasks.loop(minutes=59)
+async def periodic_cleanup():
+    """
+    A background task that runs periodically to clean up old data from the bot's state.
+    This includes trimming old event histories and expired cooldowns to manage memory usage.
+    """
+    try:
+        await state.clean_old_entries()
+        logger.info("Unified cleanup completed (7-day history/entry limits)")
+    except Exception as e:
+        logger.error(f"Cleanup error: {e}", exc_info=True)
+
+def _save_state_sync(file_path: str, data: dict) -> None:
+    """
+    A synchronous helper function to write the bot's state data to a JSON file.
+    This is designed to be run in a separate thread to avoid blocking the bot's event loop.
+    """
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+def _load_state_sync(file_path: str) -> dict:
+    """
+    A synchronous helper function to read the bot's state data from a JSON file.
+    This is designed to be run in a separate thread to avoid blocking the bot's event loop.
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+async def save_state_async() -> None:
+    """
+    Asynchronously saves the current bot state to disk.
+    It gathers all necessary data, serializes it, and writes to a file
+    using a non-blocking thread for the file I/O operation.
+    """
+    serializable_state = {}
+    current_time = time.time()
+
+    # Acquire all necessary locks before reading state data to ensure thread safety and prevent race conditions.
+    async with state.vc_lock, state.analytics_lock, state.moderation_lock, state.music_lock:
+        active_vc_sessions_copy = state.active_vc_sessions.copy()
+        
+        # The complex serialization logic is encapsulated within the BotState class's `to_dict` method.
+        serializable_state = state.to_dict(
+            guild=bot.get_guild(bot_config.GUILD_ID),
+            active_vc_sessions_to_save=active_vc_sessions_copy,
+            current_time=current_time
+        )
+
+    try:
+        # Run the blocking file I/O in a separate thread to avoid halting the async event loop.
+        if serializable_state:
+            await asyncio.to_thread(_save_state_sync, STATE_FILE, serializable_state)
+            logger.info("Bot state saved, including active VC sessions.")
+    except Exception as e:
+        logger.error(f"Failed to save bot state: {e}", exc_info=True)
+
+async def load_state_async() -> None:
+    """
+    Asynchronously loads the bot state from the JSON file if it exists.
+    If loading fails or the file doesn't exist, it initializes a fresh state.
+    """
+    global state
+    if os.path.exists(STATE_FILE):
+        try:
+            # Run the blocking file I/O in a separate thread.
+            data = await asyncio.to_thread(_load_state_sync, STATE_FILE)
+            # Deserialize the data into a BotState object.
+            state = BotState.from_dict(data, bot_config)
+            bot.state = state # Re-attach the newly loaded state to the bot.
+            helper.state = state # Ensure the helper also gets the newly loaded state object.
+            omegle_handler.state = state
+            logger.info("Bot state loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to load bot state: {e}", exc_info=True)
+            # If loading fails, start with a fresh state to ensure bot functionality.
+            state = BotState(config=bot_config)
+            bot.state = state
+            omegle_handler.state = state
+    else:
+        logger.info("No saved state file found, starting with a fresh state.")
+        state = BotState(config=bot_config)
+        bot.state = state
+        helper.state = state # Ensure helper state is also updated on a fresh start.
+        omegle_handler.state = state
+
+# Initialize the helper class AFTER the initial state object is created but BEFORE it might be replaced by `load_state_async`.
+# Pass the play_next_song function to the helper so it can be called from views.
+helper = BotHelper(bot, state, bot_config, save_state_async, lambda: asyncio.create_task(play_next_song()))
+
+
+@tasks.loop(minutes=14)
+async def periodic_state_save() -> None:
+    """A background task that periodically saves the bot's state to ensure data is not lost on crash."""
+    await save_state_async()
+
+@tasks.loop(minutes=1)
+async def periodic_geometry_save():
+    """Periodically saves the browser window's size and position."""
+    if omegle_handler:
+        geometry = await omegle_handler.get_window_geometry()
+        if geometry:
+            size, position = geometry
+            # This check prevents saving geometry when the window is minimized.
+            # Minimized windows can return negative positions like (-32000, -32000).
+            if position.get('x', -1) >= 0 and position.get('y', -1) >= 0:
+                # Use a lock to prevent race conditions during state updates
+                async with state.cooldown_lock:
+                    # Only update if the values have changed to reduce write overhead
+                    if state.window_size != size or state.window_position != position:
+                        state.window_size = size
+                        state.window_position = position
+
+#########################################
+# Voice Connection & Hotkey Functions
+#########################################
+
+def is_user_in_streaming_vc_with_camera(user: discord.Member) -> bool:
+    """Checks if a given user is in the designated streaming voice channel with their camera enabled."""
+    streaming_vc = user.guild.get_channel(bot_config.STREAMING_VC_ID)
+    # Returns True only if the user is in the VC and their self_video attribute is True.
+    return bool(streaming_vc and user in streaming_vc.members and user.voice and user.voice.self_video)
+
+async def global_skip() -> None:
+    """Executes a skip command triggered by a global hotkey press on the host machine."""
+    guild = bot.get_guild(bot_config.GUILD_ID)
+    if guild:
+        await omegle_handler.custom_skip()
+        logger.info("Executed global skip command via hotkey.")
+    else:
+        logger.error("Guild not found for global skip.")
+
+async def global_mskip() -> None:
+    if not state.music_enabled or not bot.voice_client_music or not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()):
+        logger.warning("Global mskip hotkey pressed, but nothing is playing or music is disabled.")
+        return
+    async with state.music_lock:
+        if state.music_mode == 'loop':
+            state.music_mode = 'shuffle'
+            logger.info("Loop mode disabled via global hotkey skip. Switched to Shuffle.")
+        state.is_music_paused = False
+        bot.voice_client_music.stop()
+    logger.info("Executed global music skip command via hotkey.")
+
+async def global_mpause() -> None:
+    """Executes a music pause/resume command triggered by a global hotkey."""
+    if not state.music_enabled or not bot.voice_client_music or not bot.voice_client_music.is_connected():
+        logger.warning("Global mpause hotkey pressed, but bot is not in VC or music is disabled.")
+        return
+    
+    async with state.music_lock:
+        if bot.voice_client_music.is_playing():
+            bot.voice_client_music.pause()
+            state.is_music_paused = True
+            state.is_music_playing = False
+            logger.info("Executed global music pause command via hotkey.")
+        elif bot.voice_client_music.is_paused():
+            bot.voice_client_music.resume()
+            state.is_music_paused = False
+            state.is_music_playing = True
+            logger.info("Executed global music resume command via hotkey.")
+        else:
+            logger.warning("Global mpause hotkey pressed, but nothing is playing or paused.")
+
+async def global_mvolup() -> None:
+    """Executes a music volume up command triggered by a global hotkey."""
+    if not state.music_enabled or not bot.voice_client_music: return
+    async with state.music_lock:
+        new_volume = round(min(state.music_volume + 0.05, bot_config.MUSIC_MAX_VOLUME), 2)
+        state.music_volume = new_volume
+        if bot.voice_client_music.source:
+            bot.voice_client_music.source.volume = new_volume
+    logger.info(f"Volume increased to {int(state.music_volume * 100)}% via hotkey.")
+
+async def global_mvoldown() -> None:
+    """Executes a music volume down command triggered by a global hotkey."""
+    if not state.music_enabled or not bot.voice_client_music: return
+    async with state.music_lock:
+        new_volume = round(max(state.music_volume - 0.05, 0.0), 2)
+        state.music_volume = new_volume
+        if bot.voice_client_music.source:
+            bot.voice_client_music.source.volume = new_volume
+    logger.info(f"Volume decreased to {int(state.music_volume * 100)}% via hotkey.")
+
+#########################################
+# Music Core Logic
+#########################################
+
+async def ensure_voice_connection() -> bool:
+    """
+    Ensures the bot is connected to the correct voice channel, handling reconnections gracefully.
+    This modern approach lets discord.py manage the connection state, avoiding forceful disconnects.
+    """
+    if not state.music_enabled:
+        return False
+
+    guild = bot.get_guild(bot_config.GUILD_ID)
+    if not guild:
+        logger.error("Guild not found, cannot ensure voice connection.")
+        return False
+        
+    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
+    if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel):
+        logger.error(f"STREAMING_VC_ID ({bot_config.STREAMING_VC_ID}) is invalid or not a voice channel.")
+        return False
+
+    # Use guild.voice_client as the single source of truth for the connection state.
+    current_vc = guild.voice_client
+
+    # Check if we are already perfectly connected.
+    if current_vc and current_vc.is_connected() and current_vc.channel == streaming_vc:
+        bot.voice_client_music = current_vc # Ensure our reference is up to date
+        return True
+
+    logger.info(f"Ensuring connection to voice channel: {streaming_vc.name}...")
+    try:
+        # --- NEW, SIMPLIFIED AND MORE RELIABLE CONNECTION LOGIC ---
+        # The .connect() method is smart. If the bot is already in a channel in this guild,
+        # it will automatically move it. If it's not connected, it will connect. This single call
+        # replaces the old, forceful disconnect-and-reconnect logic that can cause race conditions.
+        bot.voice_client_music = await streaming_vc.connect(reconnect=True, timeout=60.0)
+        
+        logger.info(f"Successfully connected/moved to {streaming_vc.name}.")
+        return True
+    except asyncio.TimeoutError:
+        logger.error(f"Connection to voice channel '{streaming_vc.name}' timed out.")
+        if guild.voice_client:
+            await guild.voice_client.disconnect(force=True)
+        bot.voice_client_music = None
+        return False
+    except discord.ClientException as e:
+        logger.error(f"ClientException while connecting to {streaming_vc.name}: {e}. This indicates an issue with connection state.")
+        # This can mean it's already connecting. We can trust the guild's voice_client attribute.
+        if guild.voice_client:
+            bot.voice_client_music = guild.voice_client
+            logger.info("Re-assigned existing voice client during ClientException.")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while connecting to {streaming_vc.name}: {e}", exc_info=True)
+        bot.voice_client_music = None
+        return False
+
+async def scan_and_shuffle_music() -> int:
+    """
+    Scans the music directory for supported files, caches their metadata, and shuffles them into the queue.
+    This function runs file I/O operations in a separate thread to avoid blocking the event loop.
+    """
+    if not state.music_enabled:
+        return 0
+        
+    global MUSIC_METADATA_CACHE
+    if os.path.exists(MUSIC_METADATA_CACHE_FILE):
+        try:
+            with open(MUSIC_METADATA_CACHE_FILE, "r", encoding="utf-8") as f:
+                MUSIC_METADATA_CACHE = json.load(f)
+            logger.info(f"Loaded {len(MUSIC_METADATA_CACHE)} entries from persistent metadata cache.")
+        except Exception as e:
+            logger.error(f"Could not load persistent metadata cache: {e}")
+            MUSIC_METADATA_CACHE = {}
+    
+    if not bot_config.MUSIC_LOCATION or not os.path.isdir(bot_config.MUSIC_LOCATION):
+        if bot_config.MUSIC_LOCATION:
+            logger.error(f"Music location invalid or not found: {bot_config.MUSIC_LOCATION}")
+        return 0
+
+    def _blocking_scan_and_cache():
+        """This function runs in a separate thread to avoid blocking the event loop."""
+        supported_files = bot_config.MUSIC_SUPPORTED_FORMATS
+        found_songs = []
+        local_metadata_cache = MUSIC_METADATA_CACHE.copy()
+
+        for root, _, files in os.walk(bot_config.MUSIC_LOCATION):
+            for file in files:
+                if file.lower().endswith(supported_files):
+                    song_path = os.path.join(root, file)
+                    found_songs.append(song_path)
+                    try:
+                        file_mod_time = os.path.getmtime(song_path)
+                        # Only process metadata if file is new or has been modified
+                        if song_path in local_metadata_cache and local_metadata_cache[song_path].get('mtime') == file_mod_time:
+                            continue
+
+                        audio = mutagen.File(song_path, easy=True)
+                        raw_artist = audio.get('artist', [''])[0] if audio else ''
+                        raw_title = audio.get('title', [''])[0] if audio else ''
+                        album = audio.get('album', [''])[0] if audio else ''
+                        
+                        local_metadata_cache[song_path] = {
+                            'artist': re.sub(r'[^a-z0-9]', '', raw_artist.lower()),
+                            'title': re.sub(r'[^a-z0-9]', '', raw_title.lower()),
+                            'album': re.sub(r'[^a-z0-9]', '', album.lower()),
+                            'raw_artist': raw_artist,
+                            'raw_title': raw_title,
+                            'mtime': file_mod_time
+                        }
+                    except Exception as e:
+                        logger.warning(f"Could not read metadata for {song_path}: {e}")
+                        # Ensure a default entry even on failure to prevent repeated processing
+                        if song_path not in local_metadata_cache:
+                            local_metadata_cache[song_path] = {'artist': '', 'title': '', 'album': '', 'raw_artist': '', 'raw_title': '', 'mtime': 0}
+        
+        return found_songs, local_metadata_cache
+
+    logger.info("Starting non-blocking music library scan...")
+    # Run the blocking code in a separate thread
+    found_songs, updated_metadata_cache = await asyncio.to_thread(_blocking_scan_and_cache)
+    MUSIC_METADATA_CACHE = updated_metadata_cache
+    logger.info("Music library scan complete.")
+
+    async with state.music_lock:
+        state.shuffle_queue.clear()
+        state.all_songs.clear()
+        if not found_songs:
+            logger.warning(f"No music files {bot_config.MUSIC_SUPPORTED_FORMATS} found in the specified directory.")
+            return 0
+        
+        state.all_songs = sorted(found_songs)
+        shuffled_songs = found_songs.copy()
+        random.shuffle(shuffled_songs)
+        state.shuffle_queue = shuffled_songs
+        logger.info(f"Loaded and cached {len(state.all_songs)} songs. Shuffled {len(state.shuffle_queue)} into queue.")
+
+    try:
+        # Save the updated cache to disk
+        with open(MUSIC_METADATA_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(MUSIC_METADATA_CACHE, f)
+    except Exception as e:
+        logger.error(f"Failed to save persistent metadata cache: {e}")
+        
+    return len(state.shuffle_queue)
+
+
+async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
+    """
+    Internal function to handle the actual playback of a song.
+    """
+    async with state.music_lock:
+        state.is_processing_song = True
+
+    if not state.music_enabled:
+        async with state.music_lock:
+            state.is_music_playing = False
+            state.current_song = None
+            state.is_processing_song = False
+        return
+
+    if not bot.voice_client_music or not bot.voice_client_music.is_connected():
+        logger.error("Playback failed: Bot is not connected to a voice channel. Halting playback attempt.")
+        async with state.music_lock:
+            state.is_music_playing = False
+            state.current_song = None
+            state.is_processing_song = False
+        return
+
+    try:
+        source = None
+        song_path_or_url = song_info['path']
+        song_display_name = song_info['title']
+        async with state.music_lock:
+            volume = state.music_volume
+
+        logger.debug(f"Attempting to process song: {song_info}")
+
+        if song_info.get('is_stream', False):
+            logger.info(f"Processing as a stream: {song_display_name}")
+            single_song_ydl_opts = YDL_OPTIONS.copy()
+            single_song_ydl_opts['extract_flat'] = False
+
+            with yt_dlp.YoutubeDL(single_song_ydl_opts) as ydl:
+                logger.debug(f"Executing yt-dlp extract_info for: {song_path_or_url}")
+                info = await asyncio.to_thread(ydl.extract_info, song_path_or_url, download=False)
+                
+            if 'entries' in info and info['entries']:
+                info = info['entries'][0]
+
+            audio_url = info.get('url')
+            if not audio_url:
+                raise ValueError("yt-dlp failed to extract a playable audio URL.")
+
+            logger.debug(f"Extracted audio URL successfully. Creating FFmpegPCMAudio source.")
+            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), volume=volume)
+            song_display_name = info.get('title', song_display_name)
+            async with state.music_lock:
+                if state.current_song:
+                    state.current_song['title'] = song_display_name
+        else:
+            logger.info(f"Processing as a local file: '{os.path.basename(song_path_or_url)}'.")
+            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, options="-vn -loglevel error"), volume=volume)
+
+        logger.debug("Audio source created successfully. Attempting to play.")
+        bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_song(e), bot.loop))
+        
+        async with state.music_lock:
+            state.is_processing_song = False
+
+        logger.info(f"Now playing: {song_display_name}")
+        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=song_display_name))
+
+        announcement_ctx = None
+        async with state.music_lock:
+            if state.announcement_context:
+                announcement_ctx = state.announcement_context
+                state.announcement_context = None
+        
+        if announcement_ctx:
+            await announcement_ctx.send(f"🎵 Now Playing: **{song_display_name}**")
+        elif bot_config.MUSIC_DEFAULT_ANNOUNCE_SONGS and ctx:
+            await ctx.send(f"🎵 Now Playing: **{song_display_name}**")
+
+    except Exception as e:
+        logger.critical("CRITICAL FAILURE IN _play_song.", exc_info=True)
+        logger.error(f"--> Failed Song Info: {song_info}")
+        if ctx:
+            await ctx.send(f"❌ **Playback Error:** Could not play `{song_info.get('title', 'Unknown Title')}`. Check logs.", delete_after=15)
+        
+        async with state.music_lock:
+            state.is_music_playing = False
+            state.is_processing_song = False
+
+async def start_music_playback():
+    """A locked, centralized function to prevent race conditions when starting music."""
+    # If the startup process is already locked by another task, exit immediately.
+    if state.music_startup_lock.locked():
+        return
+
+    async with state.music_startup_lock:
+        if not state.music_enabled:
+            return
+
+        # Double-check if music has started playing while we were waiting for the lock.
+        if bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()):
+            return
+
+        logger.info("Attempting to start music playback...")
+
+        if not await ensure_voice_connection():
+            logger.error("Could not start music: failed to ensure voice connection.")
+            return
+
+        # Check if the queue is empty without holding the main music lock for too long.
+        is_queue_empty = False
+        async with state.music_lock:
+             if not state.shuffle_queue:
+                is_queue_empty = True
+        
+        if is_queue_empty:
+            logger.info("Music queue is empty, rescanning library before playback.")
+            await scan_and_shuffle_music()
+        
+        # Now, trigger the player loop
+        await play_next_song()
+
+async def play_next_song(error=None, is_recursive_call=False):
+    """
+    The 'after' callback for the music player. This is the state machine's gatekeeper.
+    It intelligently decides the next song based on a clear priority system.
+    """
+    if not state.music_enabled:
+        return
+        
+    if error:
+        logger.error(f"Error in music player callback: {error}")
+
+    song_to_play_info = None
+    ctx_for_playback = None
+    needs_library_scan = False
+
+    async with state.music_lock:
+        if getattr(state, 'stop_after_clear', False):
+            state.stop_after_clear = False
+            state.is_music_playing = False
+            state.is_music_paused = False
+            state.current_song = None
+            logger.info("Playback intentionally stopped after queue clear.")
+            await bot.change_presence(activity=None)
+            return
+
+        if not await ensure_voice_connection():
+            logger.critical("Music playback stopped: Could not establish a voice connection.")
+            state.is_music_playing = False
+            state.current_song = None
+            return
+
+        # NEW PRIORITY-BASED SONG SELECTION
+        if state.music_mode == 'loop' and state.current_song:
+            song_to_play_info = state.current_song
+            logger.info("Looping current song.")
+        elif state.search_queue:
+            song_to_play_info = state.search_queue.pop(0)
+            logger.info(f"Playing next from user search queue: {song_to_play_info.get('title')}")
+        elif state.active_playlist:
+            song_to_play_info = state.active_playlist.pop(0)
+            logger.info(f"Playing next from active playlist: {song_to_play_info.get('title')}")
+        else:
+            if state.music_mode == 'shuffle':
+                if not state.shuffle_queue:
+                    needs_library_scan = True
+                else:
+                    song_path = state.shuffle_queue.pop(0)
+                    display_title = get_display_title_from_path(song_path)
+                    song_to_play_info = {'path': song_path, 'title': display_title, 'is_stream': False}
+                    logger.info(f"Playing next from local library (Shuffle): {display_title}")
+            elif state.music_mode == 'alphabetical':
+                if not state.all_songs:
+                    needs_library_scan = True
+                else:
+                    last_played_path = state.current_song.get('path') if state.current_song else None
+                    try: 
+                        next_index = (state.all_songs.index(last_played_path) + 1) % len(state.all_songs)
+                    except (ValueError, AttributeError): 
+                        next_index = 0
+                    song_path = state.all_songs[next_index]
+                    display_title = get_display_title_from_path(song_path)
+                    song_to_play_info = {'path': song_path, 'title': display_title, 'is_stream': False}
+                    logger.info(f"Playing next from local library (Alphabetical): {display_title}")
+
+    if needs_library_scan:
+        if is_recursive_call:
+            logger.error("Recursive call to play_next_song detected after a failed library scan. Halting to prevent infinite loop.")
+            return
+        logger.info("Local music queue is empty. Rescanning and reshuffling library...")
+        await scan_and_shuffle_music()
+        await play_next_song(is_recursive_call=True)
+        return
+
+    async with state.music_lock:
+        if song_to_play_info:
+            ctx_for_playback = song_to_play_info.get('ctx')
+            state.is_music_playing = True
+            state.is_music_paused = False
+            state.current_song = song_to_play_info
+        else:
+            state.is_music_playing = False
+            state.is_music_paused = False
+            state.current_song = None
+            logger.warning("Music playback finished. All queues and local library are empty.")
+            await bot.change_presence(activity=None)
+            return
+
+    if song_to_play_info:
+        await _play_song(song_to_play_info, ctx=ctx_for_playback)
+
+
+#########################################
+# Decorators
+#########################################
+
+def omegle_command_cooldown(func: Callable) -> Callable:
+    """A decorator to apply a global 5-second cooldown to Omegle commands."""
+    @wraps(func)
+    async def wrapper(ctx, *args, **kwargs):
+        current_time = time.time()
+        async with state.cooldown_lock:
+            time_since_last_cmd = current_time - state.last_omegle_command_time
+            if time_since_last_cmd < 5.0:
+                try:
+                    await ctx.message.delete()
+                except (discord.Forbidden, discord.NotFound):
+                    pass
+
+                await ctx.send(
+                    f"{ctx.author.mention}, please wait {5.0 - time_since_last_cmd:.1f} more seconds before using this command again.",
+                    delete_after=5
+                )
+                return
+            state.last_omegle_command_time = current_time
+        
+        return await func(ctx, *args, **kwargs)
+    return wrapper
+
+def require_user_preconditions():
+    """
+    A decorator for user-facing commands.
+    It enforces that non-admin users must:
+    1. Not be disabled.
+    2. Use the command in the designated command channel.
+    3. Be in the streaming voice channel with their camera on.
+    It provides specific feedback to the user based on which condition fails.
+    Allowed users are exempt from these checks.
+    """
+    async def predicate(ctx):
+        if ctx.author.id in bot_config.ALLOWED_USERS:
+            return True
+
+        async with state.moderation_lock:
+            if ctx.author.id in state.omegle_disabled_users:
+                await ctx.send("You are currently disabled from using any commands.", delete_after=10)
+                return False
+
+        if ctx.channel.id != bot_config.COMMAND_CHANNEL_ID:
+            await ctx.send(f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>.", delete_after=10)
+            return False
+        
+        if is_user_in_streaming_vc_with_camera(ctx.author):
+            return True
+
+        await ctx.send("You must be in the Streaming VC with your camera on to use commands.", delete_after=10)
+        return False
+        
+    return commands.check(predicate)
+
+def require_admin_preconditions():
+    """
+    A decorator for admin-level commands. It first checks for permission
+    (ALLOWED_USER or ADMIN_ROLE_NAME). If the user is only an ADMIN_ROLE_NAME,
+    it enforces that they are not disabled, and then checks the same channel
+    and VC/camera status as a regular user.
+    ALLOWED_USERS are exempt from all location/state checks.
+    """
+    async def predicate(ctx):
+        is_allowed = ctx.author.id in bot_config.ALLOWED_USERS
+        is_admin_role = isinstance(ctx.author, discord.Member) and any(role.name in bot_config.ADMIN_ROLE_NAME for role in ctx.author.roles)
+
+        if not (is_allowed or is_admin_role):
+            await ctx.send("⛔ You do not have permission to use this command.", delete_after=10)
+            return False
+
+        if is_allowed:
+            return True
+        
+        async with state.moderation_lock:
+            if ctx.author.id in state.omegle_disabled_users:
+                await ctx.send("You are currently disabled from using any commands.", delete_after=10)
+                return False
+
+        if ctx.channel.id != bot_config.COMMAND_CHANNEL_ID:
+            await ctx.send(f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>.", delete_after=10)
+            return False
+
+        if is_user_in_streaming_vc_with_camera(ctx.author):
+            return True
+
+        await ctx.send("You must be in the Streaming VC with your camera on to use commands.", delete_after=10)
+        return False
+
+    return commands.check(predicate)
+
+def require_allowed_user():
+    """A decorator that restricts command usage to ALLOWED_USERS only."""
+    async def predicate(ctx):
+        if ctx.author.id in bot_config.ALLOWED_USERS:
+            return True
+        await ctx.send("⛔ This command can only be used by bot owners.")
+        return False
+    return commands.check(predicate)
+
+#########################################
+# Background Task Helpers
+#########################################
+
+async def _handle_stream_vc_join(member: discord.Member):
+    """
+    A helper function to handle the logic when a user joins the streaming VC.
+    It attempts to send them the server rules via DM.
+    Decoupled from the main event handler to allow it to run as a separate task.
+    """
+    async with state.moderation_lock:
+        if (member.id in state.users_received_rules or
+            member.id in state.users_with_dms_disabled or
+            member.id in state.failed_dm_users):
+            return
+
+    try:
+        await member.send(bot_config.RULES_MESSAGE)
+        async with state.moderation_lock:
+            state.users_received_rules.add(member.id)
+        logger.info(f"Sent rules to {member.display_name}")
+    except discord.Forbidden:
+        async with state.moderation_lock:
+            state.users_with_dms_disabled.add(member.id)
+            state.failed_dm_users.add(member.id)
+        logger.warning(f"Could not DM {member.display_name} (DMs disabled or blocked).")
+    except Exception as e:
+        async with state.moderation_lock:
+            state.failed_dm_users.add(member.id)
+        logger.error(f"Generic error sending DM to {member.name}: {e}", exc_info=True)
+
+
+async def _check_for_auto_pause(vc: discord.VoiceChannel, reason: str):
+    """
+    Checks if the conditions for an automatic stream refresh (pause) are met.
+    This is typically triggered when the last user with a camera leaves or turns it off.
+    This behavior can be disabled via the EMPTY_VC_PAUSE config setting.
+    """
+    if not vc or not bot_config.EMPTY_VC_PAUSE:
+        return
+
+    users_with_camera = [m for m in vc.members if m.voice and m.voice.self_video and m.id not in bot_config.ALLOWED_USERS and not m.bot]
+
+    async with state.vc_lock:
+        if not users_with_camera and (time.time() - state.last_auto_pause_time >= 1):
+            state.last_auto_pause_time = time.time()
+            should_refresh = True
+        else:
+            should_refresh = False
+
+    if should_refresh:
+        await omegle_handler.refresh()
+        logger.info(reason)
+        if (command_channel := vc.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
+            try:
+                await command_channel.send("Stream automatically paused")
+            except Exception as e:
+                logger.error(f"Failed to send auto-refresh notification: {e}")
+
+async def _join_camera_failsafe_check(member: discord.Member, config: BotConfig):
+    """
+    After a user joins, waits 5 seconds and checks if their camera is on.
+    If it is, and they are server-muted/deafened, it removes the mute/deafen.
+    This acts as a failsafe for race conditions during VC join and camera activation.
+    """
+    await asyncio.sleep(5)
+    
+    guild = member.guild
+    if not guild: return
+        
+    current_member_state = guild.get_member(member.id)
+    if not current_member_state or not current_member_state.voice or not current_member_state.voice.channel:
+        return
+
+    is_in_streaming_vc = current_member_state.voice.channel.id == config.STREAMING_VC_ID
+    is_camera_on = current_member_state.voice.self_video
+
+    if is_in_streaming_vc and is_camera_on:
+        is_server_muted = current_member_state.voice.mute and not current_member_state.voice.self_mute
+        is_server_deafened = current_member_state.voice.deaf and not current_member_state.voice.self_deaf
+
+        if is_server_muted or is_server_deafened:
+            logger.info(f"Failsafe triggered for {current_member_state.name}. Camera is on but they are server-muted/deafened. Correcting.")
+            try:
+                await current_member_state.edit(mute=False, deafen=False)
+                logger.info(f"Failsafe successfully unmuted/undeafened {current_member_state.name}.")
+            except Exception as e:
+                logger.error(f"Failsafe failed to unmute/undeafen {current_member_state.name}: {e}")
+
+async def _soundboard_grace_protocol(member: discord.Member, config: BotConfig):
+    """
+    Handles the soundboard grace period. Unmutes a user upon joining,
+    waits a few seconds, and then re-applies mute/deafen if their camera is still off.
+    """
+    try:
+        if member.voice and (member.voice.mute or member.voice.deaf):
+            await member.edit(mute=False, deafen=False)
+    except Exception:
+        pass 
+        
+    await asyncio.sleep(2.0)
+    
+    guild = member.guild
+    if not guild: return
+    
+    member_after_sleep = guild.get_member(member.id)
+    
+    is_in_moderated_vc = lambda ch: ch and ch.id in (config.STREAMING_VC_ID, config.ALT_VC_ID)
+
+    if (member_after_sleep and member_after_sleep.voice and
+            member_after_sleep.voice.channel and is_in_moderated_vc(member_after_sleep.voice.channel)
+            and not member_after_sleep.voice.self_video):
+        try:
+            # Re-check the moderation flag before acting
+            if state.vc_moderation_active:
+                await member_after_sleep.edit(mute=True, deafen=True)
+                logger.info(f"Re-applied mute/deafen for {member_after_sleep.name} after soundboard grace period.")
+        except Exception as e:
+            logger.error(f"Failed to re-mute {member_after_sleep.name} after grace period: {e}")
+
+#########################################
+# Bot Event Handlers
+#########################################
+
+async def init_vc_moderation():
+    async with state.vc_lock:
+        is_active = state.vc_moderation_active
+    if not is_active:
+        logger.warning("VC Moderation is disabled on startup.")
+        return
+    guild = bot.get_guild(bot_config.GUILD_ID)
+    if not guild: return
+    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
+    if not streaming_vc: return
+    async with state.vc_lock:
+        for member in streaming_vc.members:
+            if not member.bot and member.id not in state.active_vc_sessions:
+                state.active_vc_sessions[member.id] = time.time()
+                logger.info(f"Started tracking VC time for existing member: {member.name} (ID: {member.id})")
+            if (not member.bot and member.id not in bot_config.ALLOWED_USERS and not (member.voice and member.voice.self_video)):
+                try:
+                    await asyncio.sleep(1)
+                    # Re-check the moderation flag before acting
+                    if state.vc_moderation_active:
+                        await member.edit(mute=True, deafen=True)
+                        logger.info(f"Auto-muted/deafened {member.name} for camera off.")
+                except Exception as e:
+                    logger.error(f"Failed to auto mute/deafen {member.name}: {e}")
+                state.camera_off_timers[member.id] = time.time()
+
+@bot.event
+async def on_ready() -> None:
+    logger.info(f"Bot is online as {bot.user}")
+    bot.state.is_interrupting_for_search = False
+    try:
+        channel = bot.get_channel(bot_config.CHAT_CHANNEL_ID)
+        if channel:
+            await channel.send("✅ Bot is online and ready!")
+    except Exception as e:
+        logger.error(f"Failed to send online message: {e}")
+
+    try:
+        await load_state_async()
+        logger.info("State loaded successfully")
+    except Exception as e:
+        logger.error(f"Error loading state: {e}", exc_info=True)
+
+    try:
+        if not periodic_state_save.is_running(): periodic_state_save.start()
+        if not periodic_cleanup.is_running(): periodic_cleanup.start()
+        if not periodic_menu_update.is_running(): periodic_menu_update.start()
+        if not timeout_unauthorized_users_task.is_running(): timeout_unauthorized_users_task.start()
+        if not periodic_geometry_save.is_running(): periodic_geometry_save.start()
+        if not music_playback_watchdog.is_running(): music_playback_watchdog.start()
+        
+        if not daily_auto_stats_clear.is_running():
+            daily_auto_stats_clear.start()
+            logger.info("Daily auto-stats task started.")
+
+        if not await omegle_handler.initialize():
+            logger.critical("Selenium initialization failed.")
+
+        if state.music_enabled:
+            logger.info("Music is enabled on startup. Initializing music player...")
+            guild = bot.get_guild(bot_config.GUILD_ID)
+            if guild:
+                streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
+                if streaming_vc and any(m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice.self_video):
+                     logger.info("Users detected in VC on startup, starting music playback.")
+                     asyncio.create_task(start_music_playback())
+                else:
+                    logger.info("No active users in VC on startup. Music will start when a user joins with camera on.")
+        else:
+            logger.info("Music is disabled by config on startup. Skipping music initialization.")
+
+        asyncio.create_task(init_vc_moderation())
+
+        async def register_hotkey(enabled_flag: bool, key_combo: str, callback_func: Callable, name: str):
+            if not enabled_flag: return
+            try:
+                await asyncio.to_thread(keyboard.remove_hotkey, key_combo)
+            except (KeyError, ValueError): pass
+            def callback_wrapper():
+                bot.loop.call_soon_threadsafe(lambda: asyncio.create_task(callback_func()))
+            try:
+                await asyncio.to_thread(keyboard.add_hotkey, key_combo, callback_wrapper)
+                logger.info(f"Registered global {name} hotkey: {key_combo}")
+            except Exception as e:
+                logger.error(f"Failed to register {name} hotkey '{key_combo}': {e}")
+        
+        await register_hotkey(bot_config.ENABLE_GLOBAL_HOTKEY, bot_config.GLOBAL_HOTKEY_COMBINATION, global_skip, "skip")
+        await register_hotkey(bot_config.ENABLE_GLOBAL_MSKIP, bot_config.GLOBAL_HOTKEY_MSKIP, global_mskip, "mskip")
+        await register_hotkey(bot_config.ENABLE_GLOBAL_MPAUSE, bot_config.GLOBAL_HOTKEY_MPAUSE, global_mpause, "mpause")
+        await register_hotkey(bot_config.ENABLE_GLOBAL_MVOLUP, bot_config.GLOBAL_HOTKEY_MVOLUP, global_mvolup, "mvolup")
+        await register_hotkey(bot_config.ENABLE_GLOBAL_MVOLDOWN, bot_config.GLOBAL_HOTKEY_MVOLDOWN, global_mvoldown, "mvoldown")
+
+        logger.info("Initialization complete")
+
+    except Exception as e:
+        logger.error(f"Error during on_ready: {e}", exc_info=True)
+
+# --- Member Event Handlers ---
+@bot.event
+@handle_errors
+async def on_member_join(member: discord.Member) -> None:
+    await helper.handle_member_join(member)
+
+@bot.event
+@handle_errors
+async def on_member_ban(guild: discord.Guild, user: discord.User) -> None:
+    await helper.handle_member_ban(guild, user)
+
+@bot.event
+@handle_errors
+async def on_member_unban(guild: discord.Guild, user: discord.User) -> None:
+    await helper.handle_member_unban(guild, user)
+
+@bot.event
+@handle_errors
+async def on_member_remove(member: discord.Member) -> None:
+    await helper.handle_member_remove(member)
+
+async def manage_music_presence():
+    """
+    Manages the music bot's presence based on user activity in the streaming VC.
+    It joins and plays when users are present, and leaves when they are not.
+    """
+    if not state.music_enabled:
+        return
+    
+    await asyncio.sleep(1.5) 
+    
+    guild = bot.get_guild(bot_config.GUILD_ID)
+    if not guild: return
+    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
+    if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel): return
+
+    human_listeners_with_cam = [m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice and m.voice.self_video]
+    is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
+
+    # --- AUTO-LEAVE LOGIC ---
+    if is_bot_connected and not human_listeners_with_cam:
+        logger.info("No active users with cameras detected. Disconnecting music bot.")
+        await bot.voice_client_music.disconnect()
+        bot.voice_client_music = None
+        async with state.music_lock:
+            state.is_music_playing = False
+            state.is_music_paused = False
+            state.current_song = None # Clear current song when leaving
+        await bot.change_presence(activity=None)
+        return
+
+    # --- REJOINING LOGIC ---
+    if not is_bot_connected and human_listeners_with_cam:
+        logger.info("Active user with camera detected and bot is not in VC. Triggering music start.")
+        asyncio.create_task(start_music_playback())
+
+@bot.event
+@handle_errors
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
+    """
+    Handles all updates to a member's voice state.
+    This is a critical event for tracking VC time, enforcing camera rules, and auto-pausing the stream.
+    """
+    if member.id == bot.user.id or member.bot:
+        return
+
+    is_in_moderated_vc = lambda ch: ch and ch.id in (bot_config.STREAMING_VC_ID, bot_config.ALT_VC_ID)
+    was_in_mod_vc = is_in_moderated_vc(before.channel)
+    is_now_in_mod_vc = is_in_moderated_vc(after.channel)
+
+    was_in_streaming_vc = before.channel and before.channel.id == bot_config.STREAMING_VC_ID
+    is_now_in_streaming_vc = after.channel and after.channel.id == bot_config.STREAMING_VC_ID
+
+    async with state.vc_lock:
+        if is_now_in_streaming_vc and not was_in_streaming_vc:
+            if member.id not in state.active_vc_sessions:
+                state.active_vc_sessions[member.id] = time.time()
+                if member.id not in state.vc_time_data:
+                    state.vc_time_data[member.id] = {"total_time": 0, "sessions": [], "username": member.name, "display_name": member.display_name}
+                logger.info(f"VC Time Tracking: '{member.display_name}' started session.")
+        
+        elif was_in_streaming_vc and not is_now_in_streaming_vc:
+            if member.id in state.active_vc_sessions:
+                start_time = state.active_vc_sessions.pop(member.id)
+                duration = time.time() - start_time
+                if member.id in state.vc_time_data:
+                    state.vc_time_data[member.id]["total_time"] += duration
+                    state.vc_time_data[member.id]["sessions"].append({"start": start_time, "end": time.time(), "duration": duration, "vc_name": before.channel.name})
+                    logger.info(f"VC Time Tracking: '{member.display_name}' ended session, adding {duration:.1f}s.")
+
+    # Read the flags once to reduce lock acquisition time, but re-check before critical actions.
+    is_mod_active = state.vc_moderation_active
+    is_hush_active = state.hush_override_active
+        
+    if is_mod_active:
+        # User joins a moderated VC
+        if is_now_in_mod_vc and not was_in_mod_vc:
+            if is_now_in_streaming_vc:
+                logger.info(f"VC JOIN: {member.display_name} ({member.name} | ID: {member.id}).")
+                asyncio.create_task(_handle_stream_vc_join(member))
+                if member.id not in bot_config.ALLOWED_USERS:
+                    asyncio.create_task(_join_camera_failsafe_check(member, bot_config))
+
+            if member.id not in bot_config.ALLOWED_USERS:
+                async with state.vc_lock:
+                    state.camera_off_timers[member.id] = time.time()
+                    logger.info(f"Started camera grace period timer for '{member.display_name}'.")
+
+                asyncio.create_task(_soundboard_grace_protocol(member, bot_config))
+
+        # User leaves a moderated VC
+        elif was_in_mod_vc and not is_now_in_mod_vc:
+            # Specifically check if the channel they left was the streaming VC
+            if before.channel.id == bot_config.STREAMING_VC_ID:
+                logger.info(f"VC LEAVE: {member.display_name} ({member.name} | ID: {member.id}).")
+                # Trigger the auto-pause check, passing the channel they left
+                asyncio.create_task(_check_for_auto_pause(before.channel, f"Auto Refreshed - '{member.display_name}' left the streaming VC."))
+
+        # User changes state within the same moderated VC
+        elif was_in_mod_vc and is_now_in_mod_vc:
+            # FIX: Explicitly check if the user moved *away* from the streaming VC,
+            # even if it's to another moderated VC (like the ALT_VC).
+            if before.channel.id == bot_config.STREAMING_VC_ID and after.channel.id != bot_config.STREAMING_VC_ID:
+                logger.info(f"VC SWITCH: {member.display_name} ({member.name} | ID: {member.id}).")
+                # Trigger the auto-pause check, passing the channel they left.
+                asyncio.create_task(_check_for_auto_pause(before.channel, f"Auto Refreshed - '{member.display_name}' switched VCs."))
+
+            camera_turned_on = not before.self_video and after.self_video
+            camera_turned_off = before.self_video and not after.self_video
+
+            if member.id not in bot_config.ALLOWED_USERS:
+                if camera_turned_off:
+                    async with state.vc_lock:
+                        state.camera_off_timers[member.id] = time.time()
+                    try:
+                        # Re-check the moderation flag to prevent acting on stale data
+                        if state.vc_moderation_active:
+                            await member.edit(mute=True, deafen=True)
+                            logger.info(f"Auto-muted/deafened '{member.display_name}' for turning camera off.")
+                    except Exception as e:
+                        logger.error(f"Failed to auto-mute '{member.display_name}': {e}")
+                    if after.channel.id == bot_config.STREAMING_VC_ID:
+                        asyncio.create_task(_check_for_auto_pause(after.channel, "Auto Refreshed - Camera Turned Off"))
+
+                elif camera_turned_on:
+                    async with state.vc_lock:
+                        state.camera_off_timers.pop(member.id, None)
+                    # Re-check flags to prevent acting on stale data
+                    if not state.hush_override_active and state.vc_moderation_active:
+                        try:
+                            await member.edit(mute=False, deafen=False)
+                            logger.info(f"Auto-unmuted '{member.display_name}' after turning camera on.")
+                        except Exception as e:
+                            logger.error(f"Failed to auto-unmute '{member.display_name}': {e}")
+
+    if is_now_in_mod_vc and member.id in bot_config.ALLOWED_USERS:
+        if member.voice and ((member.voice.mute and not member.voice.self_mute) or (member.voice.deaf and not member.voice.self_deaf)):
+            try:
+                await member.edit(mute=False, deafen=False)
+                logger.info(f"Reverted server mute/deafen for allowed user '{member.display_name}'")
+            except Exception as e:
+                logger.error(f"Failed to revert mute/deafen for '{member.display_name}': {e}")
+
+    if after.channel and after.channel.id == bot_config.PUNISHMENT_VC_ID:
+        if member.voice and (member.voice.mute or member.voice.deaf):
+            try:
+                await member.edit(mute=False, deafen=False)
+                logger.info(f"Automatically unmuted/undeafened '{member.display_name}' in Punishment VC.")
+            except Exception as e:
+                logger.error(f"Failed to unmute/undeafen '{member.display_name}' in Punishment VC: {e}")
+
+    is_event_in_streaming_vc = (before.channel and before.channel.id == bot_config.STREAMING_VC_ID) or \
+                               (after.channel and after.channel.id == bot_config.STREAMING_VC_ID)
+
+    if is_event_in_streaming_vc:
+        asyncio.create_task(manage_music_presence())
+
+
+@bot.event
+@handle_errors
+async def on_member_update(before: discord.Member, after: discord.Member) -> None:
+    if before.roles != after.roles:
+        roles_gained = [role for role in after.roles if role not in before.roles and role.name != "@everyone"]
+        roles_lost = [role for role in before.roles if role not in after.roles and role.name != "@everyone"]
+        
+        if roles_gained or roles_lost:
+            async with state.moderation_lock:
+                state.recent_role_changes.append((
+                    after.id,
+                    after.name,
+                    [r.name for r in roles_gained],
+                    [r.name for r in roles_lost],
+                    datetime.now(timezone.utc)
+                ))
+            
+            channel = after.guild.get_channel(bot_config.CHAT_CHANNEL_ID)
+            if channel:
+                embed = await build_role_update_embed(after, roles_gained, roles_lost)
+                await channel.send(embed=embed)
+
+    if before.is_timed_out() != after.is_timed_out():
+        if after.is_timed_out():
+            async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                if entry.target.id == after.id and hasattr(entry.after, "timed_out_until") and entry.after.timed_out_until is not None:
+                    duration = (entry.after.timed_out_until - datetime.now(timezone.utc)).total_seconds()
+                    reason = entry.reason or "No reason provided"
+                    moderator = entry.user
+                    await helper.send_timeout_notification(after, moderator, int(duration), reason)
+                    await helper._log_timeout_in_state(after, int(duration), reason, moderator.name, moderator.id)
+                    break
+        else:
+            async with state.moderation_lock:
+                if after.id in state.pending_timeout_removals:
+                    return
+                state.pending_timeout_removals[after.id] = True
+
+            try:
+                moderator_name = "System"
+                moderator_id = None
+                reason = "Timeout Expired Naturally"
+                found_log = False
+                for _ in range(5):
+                    try:
+                        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update, after=datetime.now(timezone.utc) - timedelta(seconds=15)):
+                            if (entry.target.id == after.id and
+                                getattr(entry.before, "timed_out_until") is not None and
+                                getattr(entry.after, "timed_out_until") is None):
+                                moderator_name = entry.user.name
+                                moderator_id = entry.user.id
+                                reason = f"Manually removed by 🛡️ {moderator_name}"
+                                found_log = True
+                                break
+                        if found_log:
+                            break
+                    except discord.Forbidden:
+                        logger.warning("Cannot check audit logs for un-timeout (Missing Permissions).")
+                        break
+                    except Exception as e:
+                        logger.error(f"Error checking audit logs for un-timeout: {e}")
+                    await asyncio.sleep(1)
+
+                async with state.moderation_lock:
+                    start_timestamp = state.active_timeouts.get(after.id, {}).get("start_timestamp", time.time())
+                    duration = int(time.time() - start_timestamp)
+                    state.recent_untimeouts.append((after.id, after.name, after.display_name, datetime.now(timezone.utc), reason, moderator_name, moderator_id))
+                    if len(state.recent_untimeouts) > 100:
+                        state.recent_untimeouts.pop(0)
+                    state.active_timeouts.pop(after.id, None)
+                await helper.send_timeout_removal_notification(after, duration, reason)
+            finally:
+                async with state.moderation_lock:
+                    state.pending_timeout_removals.pop(after.id, None)
+
+@bot.event
+@handle_errors
+async def on_message(message: discord.Message) -> None:
+    if message.author.bot or not message.guild or message.guild.id != bot_config.GUILD_ID:
+        return
+
+    if bot_config.MEDIA_ONLY_CHANNEL_ID and message.channel.id == bot_config.MEDIA_ONLY_CHANNEL_ID:
+        if bot_config.MOD_MEDIA:
+            if message.author.id not in bot_config.ALLOWED_USERS:
+                is_media_present = False
+                if message.attachments:
+                    is_media_present = True
+                if not is_media_present and message.embeds:
+                    for embed in message.embeds:
+                        if embed.type in ['image', 'gifv', 'video']:
+                            is_media_present = True
+                            break
+                if not is_media_present:
+                    try:
+                        await message.delete()
+                        logger.info(f"Deleted message from {message.author} in media-only channel #{message.channel.name} because it contained no media.")
+                        await message.channel.send(
+                            f"{message.author.mention}, this channel only allows photos and other media.",
+                            delete_after=10
+                        )
+                    except discord.Forbidden:
+                        logger.warning(f"Missing permissions to delete message in media-only channel #{message.channel.name}.")
+                    except discord.NotFound:
+                        pass
+                    except Exception as e:
+                        logger.error(f"Error deleting message in media-only channel: {e}")
+                    return
+
+    await bot.process_commands(message)
+
+# --- Menu Update Task ---
+
+@tasks.loop(minutes=2)
+async def periodic_menu_update() -> None:
+    try:
+        guild = bot.get_guild(bot_config.GUILD_ID)
+        if not guild: return
+        channel = guild.get_channel(bot_config.COMMAND_CHANNEL_ID)
+        if not channel:
+            logger.warning(f"Help menu channel with ID {bot_config.COMMAND_CHANNEL_ID} not found.")
+            return
+
+        await safe_purge(channel, limit=100)
+        
+        if state.music_enabled:
+            await helper.send_music_menu(channel)
+            await asyncio.sleep(1)
+
+        await helper.send_help_menu(channel)
+
+    except Exception as e:
+        logger.error(f"Periodic menu update task failed: {e}", exc_info=True)
+        await asyncio.sleep(300) 
+
+async def safe_purge(channel: Any, limit: int = 100) -> None:
+    if not hasattr(channel, 'purge'):
+        logger.warning(f"Attempted to purge channel '{channel.name}' which is not a messageable channel.")
+        return
+        
+    two_weeks_ago = datetime.now(timezone.utc) - timedelta(days=14)
+        
+    try:
+        deleted = await channel.purge(limit=limit, check=lambda m: m.created_at > two_weeks_ago)
+        if deleted:
+            logger.info(f"Purged {len(deleted)} messages in {channel.name}")
+            await asyncio.sleep(1)
+    except discord.HTTPException as e:
+        if e.status == 429:
+            wait = max(e.retry_after, 10)
+            logger.warning(f"Purge rate limited in {channel.name}. Waiting {wait}s")
+            await asyncio.sleep(wait)
+        else:
+            logger.error(f"An HTTP error occurred during purge: {e}", exc_info=True)
+    except discord.Forbidden:
+        logger.warning(f"Missing permissions to purge messages in {channel.name}.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during purge: {e}", exc_info=True)
+
+
+@tasks.loop(time=dt_time(bot_config.AUTO_STATS_HOUR_UTC, bot_config.AUTO_STATS_MINUTE_UTC))
+async def daily_auto_stats_clear() -> None:
+    stats_channel_id = bot_config.AUTO_STATS_CHAN or bot_config.CHAT_CHANNEL_ID
+    channel = bot.get_channel(stats_channel_id)
+    if not channel:
+        logger.error(f"Daily stats channel with ID {stats_channel_id} not found! Cannot run daily stats clear.")
+        return
+
+    report_sent_successfully = False
+    try:
+        await helper.show_analytics_report(channel)
+        report_sent_successfully = True
+    except Exception as e:
+        logger.error(f"Daily auto-stats failed during 'show_analytics_report': {e}", exc_info=True)
+        try:
+            await channel.send("⚠️ **Critical Error:** Failed to generate the daily stats report. **Statistics will NOT be cleared.** Please check the logs.")
+        except Exception as e_inner:
+            logger.error(f"Failed to send the critical error message to the channel: {e_inner}")
+
+    if report_sent_successfully:
+        try:
+            streaming_vc = channel.guild.get_channel(bot_config.STREAMING_VC_ID)
+            alt_vc = channel.guild.get_channel(bot_config.ALT_VC_ID) if bot_config.ALT_VC_ID else None
+            current_members = []
+            if streaming_vc: current_members.extend([m for m in streaming_vc.members if not m.bot])
+            if alt_vc: current_members.extend([m for m in alt_vc.members if not m.bot])
+
+            async with state.vc_lock, state.analytics_lock, state.moderation_lock:
+                state.vc_time_data = {}
+                state.active_vc_sessions = {}
+                state.analytics = {"command_usage": {}, "command_usage_by_user": {}, "violation_events": 0}
+                state.user_violations = {}
+                state.camera_off_timers = {}
+
+                if current_members:
+                    current_time = time.time()
+                    for member in current_members:
+                        state.active_vc_sessions[member.id] = current_time
+                        state.vc_time_data[member.id] = {"total_time": 0, "sessions": [], "username": member.name, "display_name": member.display_name}
+                    logger.info(f"Restarted VC tracking for {len(current_members)} members after auto-clear")
+
+            await channel.send("✅ Statistics automatically cleared and tracking restarted!")
+
+        except Exception as e:
+            logger.error(f"Daily auto-stats failed during state clearing: {e}", exc_info=True)
+
+@tasks.loop(seconds=15)
+@handle_errors
+async def timeout_unauthorized_users_task() -> None:
+    async with state.vc_lock:
+        is_active = state.vc_moderation_active
+    if not is_active:
+        return
+
+    guild = bot.get_guild(bot_config.GUILD_ID)
+    if not guild: return
+    
+    punishment_vc = guild.get_channel(bot_config.PUNISHMENT_VC_ID)
+    if not punishment_vc: 
+        logger.warning("Punishment VC not found, moderation task cannot run.")
+        return
+
+    moderated_vcs = []
+    if streaming_vc := guild.get_channel(bot_config.STREAMING_VC_ID):
+        moderated_vcs.append(streaming_vc)
+    if bot_config.ALT_VC_ID and (alt_vc := guild.get_channel(bot_config.ALT_VC_ID)):
+        if alt_vc not in moderated_vcs:
+            moderated_vcs.append(alt_vc)
+
+    if not moderated_vcs:
+        logger.warning("No valid moderated VCs found.")
+        return
+
+    users_to_check = []
+    current_time = time.time()
+    async with state.vc_lock:
+        for member_id, start_time in list(state.camera_off_timers.items()):
+            if current_time - start_time >= bot_config.CAMERA_OFF_ALLOWED_TIME:
+                users_to_check.append(member_id)
+
+    for member_id in users_to_check:
+        member = guild.get_member(member_id)
+        if not member or not member.voice or not member.voice.channel:
+            async with state.vc_lock:
+                state.camera_off_timers.pop(member_id, None)
+            continue
+
+        vc = member.voice.channel
+        
+        async with state.vc_lock:
+            timer_start_time = state.camera_off_timers.get(member_id)
+            if not timer_start_time or (time.time() - timer_start_time < bot_config.CAMERA_OFF_ALLOWED_TIME):
+                continue
+            
+            state.camera_off_timers.pop(member_id, None)
+
+        violation_count = 0
+        async with state.moderation_lock:
+            state.analytics["violation_events"] += 1
+            state.user_violations[member_id] = state.user_violations.get(member_id, 0) + 1
+            violation_count = state.user_violations[member_id]
+
+        try:
+            punishment_applied = ""
+            if violation_count == 1:
+                reason = f"Must have camera on in {vc.name}."
+                await member.move_to(punishment_vc, reason=reason)
+                punishment_applied = "moved"
+                await helper.send_punishment_vc_notification(member, reason, bot.user.mention)
+                logger.info(f"Moved {member.name} to PUNISHMENT VC (from {vc.name}).")
+            elif violation_count == 2:
+                timeout_duration = bot_config.TIMEOUT_DURATION_SECOND_VIOLATION
+                reason = f"2nd camera violation in {vc.name}."
+                await member.timeout(timedelta(seconds=timeout_duration), reason=reason)
+                punishment_applied = "timed out"
+                await helper._log_timeout_in_state(member, timeout_duration, reason, "AutoMod")
+                logger.info(f"Timed out {member.name} for {timeout_duration}s (from {vc.name}).")
+            else:
+                timeout_duration = bot_config.TIMEOUT_DURATION_THIRD_VIOLATION
+                reason = f"Repeated camera violations in {vc.name}."
+                await member.timeout(timedelta(seconds=timeout_duration), reason=reason)
+                punishment_applied = "timed out"
+                await helper._log_timeout_in_state(member, timeout_duration, reason, "AutoMod")
+                logger.info(f"Timed out {member.name} for {timeout_duration}s (from {vc.name}).")
+
+            is_dm_disabled = False
+            async with state.moderation_lock:
+                is_dm_disabled = member_id in state.users_with_dms_disabled
+
+            if not is_dm_disabled:
+                try:
+                    await member.send(f"You've been {punishment_applied} for not having a camera on in the VC.")
+                except discord.Forbidden:
+                    async with state.moderation_lock:
+                        state.users_with_dms_disabled.add(member_id)
+                except Exception as e:
+                    logger.error(f"Failed to send violation DM to {member.name}: {e}")
+
+        except discord.Forbidden:
+            logger.warning(f"Missing permissions to punish {member.name} in {vc.name}.")
+        except discord.HTTPException as e:
+            logger.error(f"Failed to punish {member.name} in {vc.name}: {e}")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during punishment for {member.name}: {e}")
+
+# NEW: Music Watchdog Task
+@tasks.loop(seconds=10)
+async def music_playback_watchdog():
+    """
+    A watchdog task that runs periodically to ensure the music bot behaves correctly.
+    It forces playback if the bot is idle in a VC with users, and tells it to join/leave
+    when appropriate. This is the ultimate fix for the player going silent.
+    """
+    if not state.music_enabled:
+        return
+
+    guild = bot.get_guild(bot_config.GUILD_ID)
+    if not guild: return
+    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
+    if not streaming_vc: return
+
+    human_listeners_with_cam = [m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice and m.voice.self_video]
+    is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
+
+    # Case 1 & 3: Listeners are present but bot isn't, or bot is present but listeners aren't.
+    # The manage_music_presence function already handles both joining and leaving perfectly.
+    if (human_listeners_with_cam and not is_bot_connected) or (not human_listeners_with_cam and is_bot_connected):
+        logger.info("Watchdog: Mismatch in bot presence and listeners. Triggering presence manager.")
+        asyncio.create_task(manage_music_presence())
+        return
+
+    # Case 2: Bot is connected and listeners are present, but nothing is playing.
+    async with state.music_lock:
+        is_processing = state.is_processing_song
+
+    if human_listeners_with_cam and is_bot_connected:
+        if not bot.voice_client_music.is_playing() and not bot.voice_client_music.is_paused() and not is_processing:
+            logger.warning("Watchdog: Bot is connected but idle with listeners present. Force-starting playback.")
+            await start_music_playback()
+
+@music_playback_watchdog.before_loop
+async def before_music_watchdog():
+    await bot.wait_until_ready()
+
+
+#########################################
+# Bot Commands
+#########################################
+
+@bot.command(name='help')
+@require_admin_preconditions()
+@handle_errors
+async def help_command(ctx):
+    await helper.send_help_menu(ctx)
+
+@bot.command(name='skip', aliases=['start'])
+@require_user_preconditions()
+@omegle_command_cooldown
+@handle_errors
+async def skip(ctx):
+    command_name = f"!{ctx.invoked_with}"
+    record_command_usage(state.analytics, command_name)
+    record_command_usage_by_user(state.analytics, ctx.author.id, command_name)
+    await omegle_handler.custom_skip(ctx)
+
+@bot.command(name='refresh', aliases=['pause'])
+@require_user_preconditions()
+@omegle_command_cooldown
+@handle_errors
+async def refresh(ctx):
+    command_name = f"!{ctx.invoked_with}"
+    record_command_usage(state.analytics, command_name)
+    record_command_usage_by_user(state.analytics, ctx.author.id, command_name)
+    await omegle_handler.refresh(ctx)
+
+@bot.command(name='purge')
+@require_allowed_user()
+@handle_errors
+async def purge(ctx, count: int) -> None:
+    logger.info(f"Purge command received with count: {count}")
+    deleted = await ctx.channel.purge(limit=count + 1)
+    logger.info(f"Purged {len(deleted)} messages.")
+
+
+@purge.error
+async def purge_error(ctx, error: Exception) -> None:
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Usage: !purge <number>")
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.send("⛔ You do not have permission to use this command.")
+    else:
+        await ctx.send("An error occurred in the purge command.")
+        logger.error(f"Error in purge command: {error}", exc_info=True)
+
+@bot.command(name='shutdown')
+@require_allowed_user()
+@handle_errors
+async def shutdown(ctx) -> None:
+    if getattr(bot, "_is_shutting_down", False):
+        await ctx.send("🛑 Shutdown already in progress.")
+        return
+
+    confirm_msg = await ctx.send("⚠️ **Are you sure you want to shut down the bot?**\nReact with ✅ to confirm or ❌ to cancel.")
+    for emoji in ("✅", "❌"): await confirm_msg.add_reaction(emoji)
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in {"✅", "❌"} and reaction.message.id == confirm_msg.id
+
+    try:
+        reaction, _ = await bot.wait_for("reaction_add", timeout=30.0, check=check)
+        if str(reaction.emoji) == "❌":
+            await confirm_msg.edit(content="🟢 Shutdown cancelled.")
+            return
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(content="🟢 Shutdown timed out.")
+        return
+    finally:
+        try: await confirm_msg.clear_reactions()
+        except discord.HTTPException: pass
+
+    await _initiate_shutdown(ctx)
+
+#########################################
+# Music Commands
+#########################################
+
+@bot.command(name='music')
+@require_admin_preconditions()
+@handle_errors
+async def music_command(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+    await helper.send_music_menu(ctx)
+
+async def is_song_in_queue(state: BotState, song_path_or_url: str) -> bool:
+    async with state.music_lock:
+        if state.current_song and state.current_song.get('path') == song_path_or_url:
+            return True
+        
+        all_queued_paths = {song.get('path') for song in state.active_playlist}
+        all_queued_paths.update({song.get('path') for song in state.search_queue})
+        
+        if song_path_or_url in all_queued_paths:
+            return True
+            
+    return False
+
+@bot.command(name='mpauseplay', aliases=['mpp'])
+@require_user_preconditions()
+@handle_errors
+async def mpauseplay(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+        
+    if not await ensure_voice_connection():
+        await ctx.send("❌ Music player is not connected and could not reconnect.", delete_after=10)
+        return
+
+    was_stopped = False
+    async with state.music_lock:
+        if bot.voice_client_music.is_playing():
+            bot.voice_client_music.pause()
+            state.is_music_paused = True
+            state.is_music_playing = False
+            logger.info("Music paused.")
+        elif bot.voice_client_music.is_paused():
+            bot.voice_client_music.resume()
+            state.is_music_paused = False
+            state.is_music_playing = True
+            logger.info("Music resumed.")
+        else:
+            was_stopped = True
+    
+    if was_stopped:
+        logger.info("Music started via toggle command.")
+        await play_next_song()
+
+@bot.command(name='mskip')
+@require_user_preconditions()
+@handle_errors
+async def mskip(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+        
+    if not await ensure_voice_connection():
+        await ctx.send("❌ Music player is not connected and could not reconnect.", delete_after=10)
+        return
+
+    if not bot.voice_client_music or not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()):
+        await ctx.send("Nothing is currently playing to skip.", delete_after=10)
+        return
+
+    old_song_title = "the current song"
+    async with state.music_lock:
+        if state.current_song:
+            old_song_title = state.current_song.get('title', 'Unknown Title')
+        
+        if state.music_mode == 'loop':
+            state.music_mode = 'shuffle'
+            await ctx.send("🔁 Loop mode disabled. Switching to 🔀 Shuffle mode.", delete_after=10)
+            logger.info(f"Loop mode disabled by {ctx.author.name} via skip. Switched to Shuffle.")
+        
+        state.is_music_paused = False
+        state.announcement_context = ctx
+        
+    bot.voice_client_music.stop()
+    logger.info(f"Song '{old_song_title}' skipped by {ctx.author.name}. Awaiting next song announcement.")
+
+
+@bot.command(name='volume', aliases=['vol'])
+@require_user_preconditions()
+@handle_errors
+async def volume(ctx, level: int):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+
+    if not await ensure_voice_connection():
+        await ctx.send("❌ Music player is not connected and could not reconnect.", delete_after=10)
+        return
+
+    if not 0 <= level <= 100:
+        await ctx.send(f"Volume must be between 0 and 100.", delete_after=10)
+        return
+        
+    async with state.music_lock:
+        new_volume = round((level / 100) * bot_config.MUSIC_MAX_VOLUME, 2)
+        state.music_volume = new_volume
+        if bot.voice_client_music.source:
+            bot.voice_client_music.source.volume = new_volume
+    await ctx.send(f"Volume set to {level}%", delete_after=5)
+    logger.info(f"Volume set to {level}% ({state.music_volume}) by {ctx.author.name}")
+
+
+@bot.command(name='msearch', aliases=['m'])
+@require_user_preconditions()
+@handle_errors
+async def msearch(ctx, *, query: str):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+
+    if not await ensure_voice_connection():
+        await ctx.send("❌ Music player is not connected and could not reconnect.", delete_after=10)
+        return
+
+    search_query = query.strip()
+    status_msg = await ctx.send(f"⏳ Searching for `{search_query}`...")
+
+    if search_query.startswith('http'):
+        playlist_indicators = ['playlist?list=', '&list=', '/playlist/', '/album/']
+        is_playlist_url = any(indicator in search_query for indicator in playlist_indicators)
+
+        if is_playlist_url:
+            await status_msg.edit(content=f"⏳ Detected playlist. Unpacking songs from `{search_query}`...")
+            try:
+                with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                    info = await asyncio.to_thread(ydl.extract_info, search_query, download=False)
+                
+                if not info or 'entries' not in info or not info.get('entries'):
+                    await status_msg.edit(content=f"❌ Could not unpack playlist. No songs found.")
+                    return
+
+                entries_with_titles = []
+                for entry in info.get('entries', []):
+                    if not entry or not entry.get('url'):
+                        continue
+                    
+                    raw_title = entry.get('title', 'Unknown Title')
+                    artist = entry.get('artist') or entry.get('creator') or entry.get('uploader')
+                    
+                    display_title = f"{artist} - {raw_title}" if artist and artist not in raw_title else raw_title
+
+                    entries_with_titles.append({
+                        'title': display_title, 
+                        'path': entry.get('url'), 
+                        'is_stream': True, 
+                        'ctx': ctx
+                    })
+
+                if not entries_with_titles:
+                    await status_msg.edit(content="❌ Playlist URL yielded no playable songs.")
+                    return
+                
+                added_count, skipped_count, was_idle = 0, 0, False
+                async with state.music_lock:
+                    existing_paths = {s.get('path') for s in (state.active_playlist + state.search_queue)}
+                    if state.current_song: existing_paths.add(state.current_song.get('path'))
+
+                    new_songs_to_queue = []
+                    for song in entries_with_titles:
+                        if song['path'] not in existing_paths:
+                            new_songs_to_queue.append(song)
+                            existing_paths.add(song['path'])
+                        else: skipped_count += 1
+                    
+                    if new_songs_to_queue:
+                        state.search_queue.extend(new_songs_to_queue)
+                        added_count = len(new_songs_to_queue)
+                        was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
+                
+                response_msg = f"✅ Added **{added_count}** songs from the playlist to the queue."
+                if skipped_count > 0: response_msg += f" ({skipped_count} duplicates were skipped)."
+                await status_msg.edit(content=response_msg)
+                
+                if was_idle and added_count > 0: await play_next_song()
+                return
+
+            except Exception as e:
+                logger.error(f"Failed to process playlist URL {search_query}: {e}", exc_info=True)
+                await status_msg.edit(content="❌ An error occurred while unpacking the playlist.")
+                return
+
+        else:
+            try:
+                await status_msg.edit(content=f"⏳ Looking up URL...")
+                single_song_ydl_opts = YDL_OPTIONS.copy()
+                single_song_ydl_opts['extract_flat'] = False
+                
+                with yt_dlp.YoutubeDL(single_song_ydl_opts) as ydl:
+                    info = await asyncio.to_thread(ydl.extract_info, search_query, download=False)
+
+                if 'entries' in info and info['entries']: info = info['entries'][0]
+                
+                raw_title = info.get('title', search_query)
+                artist = info.get('artist') or info.get('creator') or info.get('uploader')
+                song_title = f"{artist} - {raw_title}" if artist and artist not in raw_title else raw_title
+
+                original_url = info.get('webpage_url', search_query)
+
+                song_info_payload = {'title': song_title, 'path': original_url, 'is_stream': True, 'ctx': ctx}
+
+                if await is_song_in_queue(state, song_info_payload['path']):
+                    await status_msg.edit(content=f"⚠️ **{song_title}** is already in the queue.")
+                    return
+
+                async with state.music_lock:
+                    state.search_queue.append(song_info_payload)
+                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                
+                await status_msg.edit(content=f"✅ Queued: **{song_title}**")
+                if was_idle: await play_next_song()
+                return
+            
+            except Exception as e:
+                logger.error(f"Failed to process single URL {search_query}: {e}", exc_info=True)
+                await status_msg.edit(content=f"❌ Could not process the provided link.")
+                return
+
+    await status_msg.edit(content=f"⏳ Searching for `{search_query}` in the local library...")
+    search_terms = [re.sub(r'[^a-z0-9]', '', term) for term in search_query.lower().split()]
+
+    local_hits = []
+    if search_terms:
+        def normalize_text(text: str) -> str: return re.sub(r'[^a-z0-9]', '', text.lower())
+        for song_path, metadata in MUSIC_METADATA_CACHE.items():
+            searchable_metadata = (
+                normalize_text(os.path.basename(song_path)) +
+                metadata.get('artist', '') + metadata.get('title', '') + metadata.get('album', '')
+            )
+            if all(term in searchable_metadata for term in search_terms):
+                display_title = get_display_title_from_path(song_path)
+                local_hits.append({'title': display_title, 'path': song_path, 'is_stream': False, 'ctx': ctx})
+
+    all_hits = local_hits
+    is_Youtube = False
+    if not local_hits:
+        await status_msg.edit(content=f"⏳ No local results. Searching YouTube for `{search_query}`...")
+        is_Youtube = True
+        try:
+            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{search_query}", download=False)
+                if 'entries' in search_results:
+                    for entry in search_results['entries']:
+                        if entry and entry.get('url'):
+                            raw_title = entry.get('title', 'Unknown Title')
+                            artist = entry.get('artist') or entry.get('creator') or entry.get('uploader')
+                            display_title = f"{artist} - {raw_title}" if artist and artist not in raw_title else raw_title
+                            all_hits.append({
+                                'title': display_title,
+                                'path': entry.get('webpage_url', entry.get('url')),
+                                'is_stream': True,
+                                'ctx': ctx
+                            })
+        except Exception as e:
+            await status_msg.edit(content=f"❌ An error occurred while searching YouTube: {e}")
+            logger.error(f"Youtube failed for query '{search_query}': {e}")
+            return
+
+    if not all_hits:
+        await status_msg.edit(content=f"❌ No songs found matching `{search_query}` locally or on YouTube.")
+        return
+
+    class SearchResultsView(discord.ui.View):
+        def __init__(self, hits: list, author: discord.Member, query: str, is_Youtube: bool, youtube_page: int = 1):
+            super().__init__(timeout=180.0)
+            self.hits, self.author, self.query, self.is_Youtube, self.youtube_page = hits, author, query, is_Youtube, youtube_page
+            self.current_page, self.page_size = 0, 23
+            self.total_pages = (len(self.hits) + self.page_size - 1) // self.page_size
+            self.message = None
+            self.update_components()
+
+        def update_components(self):
+            self.clear_items()
+            self.add_item(self.create_dropdown())
+            if not self.is_Youtube and self.total_pages > 1:
+                self.add_item(self.create_nav_button("⬅️ Prev", "prev_page", self.current_page == 0))
+                self.add_item(self.create_nav_button("Next ➡️", "next_page", self.current_page >= self.total_pages - 1))
+            if self.is_Youtube:
+                self.add_item(self.create_youtube_nav_button("Next Page ➡️", "youtube_next_page", len(self.hits) < 10))
+
+        def create_dropdown(self) -> discord.ui.Select:
+            start_index = self.current_page * self.page_size
+            end_index = start_index + self.page_size
+            page_hits = self.hits[start_index:end_index]
+            options = []
+            if not self.is_Youtube:
+                options.append(discord.SelectOption(label=f"Search YouTube for '{self.query[:50]}'", value="search_youtube", emoji="📺"))
+            if page_hits:
+                options.append(discord.SelectOption(label=f"Add All ({len(page_hits)}) On This Page", value="add_all", emoji="➕"))
+            for i, hit in enumerate(page_hits):
+                options.append(discord.SelectOption(label=f"{(start_index + i) + 1}. {hit['title']}"[:95], value=str(start_index + i)))
+            placeholder = f"Page {self.current_page + 1}/{self.total_pages}..." if not self.is_Youtube else f"YouTube Page {self.youtube_page}..."
+            select_menu = discord.ui.Select(placeholder=placeholder, options=options)
+            select_menu.callback = self.select_callback
+            return select_menu
+
+        def create_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, custom_id=custom_id, disabled=disabled)
+            async def nav_callback(interaction: discord.Interaction):
+                if interaction.user != self.author:
+                    await interaction.response.send_message("You cannot control this menu.", ephemeral=True); return
+                if interaction.data['custom_id'] == 'prev_page': self.current_page -= 1
+                elif interaction.data['custom_id'] == 'next_page': self.current_page += 1
+                self.update_components()
+                await interaction.response.edit_message(view=self)
+            button.callback = nav_callback
+            return button
+            
+        def create_youtube_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary, custom_id=custom_id, disabled=disabled)
+            async def youtube_nav_callback(interaction: discord.Interaction):
+                if interaction.user != self.author:
+                    await interaction.response.send_message("You cannot control this menu.", ephemeral=True); return
+                await interaction.response.edit_message(content=f"⏳ Loading page {self.youtube_page + 1} of YouTube results...", view=None)
+                next_page = self.youtube_page + 1
+                next_page_ydl_opts = YDL_OPTIONS.copy()
+                next_page_ydl_opts['playliststart'] = (self.youtube_page * 10) + 1
+                new_hits = []
+                try:
+                    with yt_dlp.YoutubeDL(next_page_ydl_opts) as ydl:
+                        search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{self.query}", download=False)
+                        if 'entries' in search_results:
+                            for entry in search_results.get('entries', []):
+                                if entry and entry.get('url'): new_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True})
+                except Exception as e:
+                    logger.error(f"YouTube next page search failed for query '{self.query}': {e}", exc_info=True)
+                    self.update_components(); await interaction.message.edit(content="An error occurred.", view=self); return
+                if not new_hits:
+                    self.disabled = True; self.update_components(); await interaction.message.edit(content="No more results found.", view=self); return
+                new_view = SearchResultsView(hits=new_hits, author=self.author, query=self.query, is_Youtube=True, youtube_page=next_page)
+                new_view.message = interaction.message; await interaction.message.edit(content=f"Showing YouTube results page {next_page}:", view=new_view)
+            button.callback = youtube_nav_callback
+            return button
+
+        async def select_callback(self, interaction: discord.Interaction):
+            await interaction.response.defer()
+            if interaction.user != self.author:
+                await interaction.followup.send("You cannot control this menu.", ephemeral=True); return
+            selected_value = interaction.data['values'][0]
+
+            if selected_value == "search_youtube":
+                await interaction.message.edit(content=f"⏳ Searching YouTube for `{self.query}`...", view=None)
+                youtube_hits = []
+                try:
+                    with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                        search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{self.query}", download=False)
+                        if 'entries' in search_results:
+                            for entry in search_results['entries']:
+                                if entry and entry.get('url'): youtube_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True})
+                except Exception as e:
+                    await interaction.message.edit(content=f"❌ An error occurred: {e}"); logger.error(f"Youtube failed: {e}"); return
+                if not youtube_hits:
+                    await interaction.message.edit(content=f"❌ No songs found on YouTube for `{self.query}`."); return
+                new_view = SearchResultsView(youtube_hits, self.author, self.query, is_Youtube=True, youtube_page=1)
+                new_view.message = interaction.message; await interaction.message.edit(content=f"Found {len(youtube_hits)} results from YouTube:", view=new_view)
+                return
+
+            if selected_value == "add_all":
+                start_index, end_index = self.current_page * self.page_size, (self.current_page + 1) * self.page_size
+                songs_to_add_raw = self.hits[start_index:end_index]
+                songs_to_add, already_in_queue_count = [], 0
+                async with state.music_lock:
+                    existing_paths = {s.get('path') for s in (state.active_playlist + state.search_queue)}
+                    if state.current_song: existing_paths.add(state.current_song.get('path'))
+                for song in songs_to_add_raw:
+                    if song['path'] not in existing_paths: songs_to_add.append(song); existing_paths.add(song['path'])
+                    else: already_in_queue_count += 1
+                if not songs_to_add:
+                    await interaction.followup.send(f"✅ All songs on this page are already in the queue.", ephemeral=True); return
+                async with state.music_lock:
+                    state.search_queue.extend(songs_to_add)
+                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                response_msg = f"🎵 {interaction.user.mention} added {len(songs_to_add)} songs."
+                if already_in_queue_count > 0: response_msg += f" ({already_in_queue_count} were duplicates)."
+                await interaction.followup.send(response_msg)
+                if was_idle: await asyncio.create_task(play_next_song())
+                if self.current_page < self.total_pages - 1:
+                    self.current_page += 1; self.update_components(); await interaction.message.edit(view=self)
+                else:
+                    for item in self.children: item.disabled = True; await interaction.message.edit(content="Added songs from the last page.", view=self)
+            else:
+                selected_song = self.hits[int(selected_value)]
+                if await is_song_in_queue(bot.state, selected_song['path']):
+                    await interaction.followup.send(f"⚠️ **{selected_song['title']}** is already in the queue.", ephemeral=True); return
+                async with state.music_lock:
+                    state.search_queue.append(selected_song)
+                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                await interaction.followup.send(f"🎵 {interaction.user.mention} added **{selected_song['title']}** to the queue.")
+                if was_idle: await play_next_song()
+
+        async def on_timeout(self):
+            if self.message:
+                for item in self.children: item.disabled = True
+                try: await self.message.edit(content="Search menu timed out.", view=self)
+                except discord.NotFound: pass
+
+    view = SearchResultsView(all_hits, ctx.author, query=search_query, is_Youtube=is_Youtube)
+    content_msg = f"Found {len(all_hits)} local results. Select a song or search YouTube:"
+    if is_Youtube: content_msg = f"Found {len(all_hits)} results from YouTube. Please select:"
+    view.message = await status_msg.edit(content=content_msg, view=view)
+
+
+@bot.command(name='mclear')
+@require_user_preconditions()
+@handle_errors
+async def mclear(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+    await helper.confirm_and_clear_music_queue(ctx)
+
+@bot.command(name='mshuffle')
+@require_user_preconditions()
+@handle_errors
+async def mshuffle(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+        
+    modes_cycle = ['shuffle', 'alphabetical', 'loop']
+    display_map = {'shuffle': ('Shuffle', '🔀'), 'alphabetical': ('Alphabetical', '▶️'), 'loop': ('Loop', '🔁')}
+    async with state.music_lock:
+        try: current_index = modes_cycle.index(state.music_mode)
+        except ValueError: current_index = -1
+        new_mode = modes_cycle[(current_index + 1) % len(modes_cycle)]
+        state.music_mode = new_mode
+        display_name, emoji = display_map[new_mode]
+    await ctx.send(f"{emoji} Music mode is now **{display_name}**.")
+    logger.info(f"Music mode set to {new_mode} by {ctx.author.name}")
+
+@bot.command(name='nowplaying', aliases=['np'])
+@require_user_preconditions()
+@handle_errors
+async def nowplaying(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+        
+    record_command_usage(state.analytics, "!nowplaying")
+    record_command_usage_by_user(state.analytics, ctx.author.id, "!nowplaying")
+    await helper.show_now_playing(ctx)
+
+
+@bot.command(name='queue', aliases=['q'])
+@require_user_preconditions()
+@handle_errors
+async def queue(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+
+    command_name = f"!{ctx.invoked_with}"
+    record_command_usage(state.analytics, command_name)
+    record_command_usage_by_user(state.analytics, ctx.author.id, command_name)
+    
+    await helper.show_queue(ctx)
+
+
+@bot.group(name='playlist', invoke_without_command=True)
+@require_user_preconditions()
+@handle_errors
+async def playlist(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
+        
+    record_command_usage(state.analytics, "!playlist")
+    record_command_usage_by_user(state.analytics, ctx.author.id, "!playlist")
+    await ctx.send("Invalid playlist command. Use `!playlist save|load|list|delete <name>`.", delete_after=10)
+
+@playlist.command(name='save')
+@handle_errors
+async def playlist_save(ctx, *, name: str):
+    async with state.music_lock:
+        queue_to_save = state.active_playlist + state.search_queue
+        if not queue_to_save:
+            await ctx.send("The queue is empty, there is nothing to save.", delete_after=10)
+            return
+        state.playlists[name.lower()] = list(queue_to_save)
+    await ctx.send(f"✅ Playlist **{name}** saved with {len(queue_to_save)} songs.")
+    await save_state_async()
+
+@playlist.command(name='load')
+@handle_errors
+async def playlist_load(ctx, *, name: Optional[str] = None):
+    if not name:
+        await ctx.send("Usage: `!playlist load <playlist_name>`", delete_after=10)
+        return
+    playlist_name, added_count, skipped_count, was_idle = name.lower(), 0, 0, False
+    async with state.music_lock:
+        if playlist_name not in state.playlists:
+            await ctx.send(f"❌ Playlist **{name}** could not be found.", delete_after=10); return
+        songs_to_load = state.playlists[playlist_name]
+        existing_paths = {s.get('path') for s in (state.active_playlist + state.search_queue)}
+        if state.current_song: existing_paths.add(state.current_song.get('path'))
+        new_songs_to_queue = []
+        for song in songs_to_load:
+            if song_path := song.get('path'):
+                if song_path not in existing_paths:
+                    new_songs_to_queue.append(song); existing_paths.add(song_path); added_count += 1
+                else: skipped_count += 1
+        if new_songs_to_queue:
+            state.search_queue.extend(new_songs_to_queue)
+            was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
+    response_msg = f"✅ Playlist **{name}** loaded. Added {added_count} new songs."
+    if skipped_count > 0: response_msg += f" Skipped {skipped_count} duplicate(s)."
+    await ctx.send(response_msg)
+    if was_idle and added_count > 0: await play_next_song()
+
+@playlist.command(name='list')
+@handle_errors
+async def playlist_list(ctx):
+    async with state.music_lock:
+        if not state.playlists:
+            await ctx.send("There are no saved playlists.", delete_after=10); return
+        embed = discord.Embed(title="💾 Saved Playlists", color=discord.Color.green())
+        desc_parts = [f"• **{p_name.capitalize()}**: {len(songs)} songs" for p_name, songs in state.playlists.items()]
+        embed.description = "\n".join(desc_parts)
+    await ctx.send(embed=embed)
+
+@playlist.command(name='delete')
+@handle_errors
+async def playlist_delete(ctx, *, name: str):
+    playlist_name = name.lower()
+    async with state.music_lock:
+        if playlist_name not in state.playlists:
+            await ctx.send(f"❌ Playlist **{name}** could not be found.", delete_after=10); return
+        del state.playlists[playlist_name]
+    await ctx.send(f"✅ Playlist **{name}** has been deleted.")
+    await save_state_async()
+
+
+async def _initiate_shutdown(ctx: Optional[commands.Context] = None):
+    if getattr(bot, "_is_shutting_down", False): return
+    bot._is_shutting_down = True
+    author_name = ctx.author.name if ctx else "the system"
+    logger.critical(f"Shutdown initiated by {author_name} (ID: {ctx.author.id if ctx else 'N/A'})")
+    if ctx: await ctx.send("🛑 **Bot is shutting down...**")
+    async def unregister_hotkey(enabled, combo, name):
+        if enabled:
+            try: await asyncio.to_thread(keyboard.remove_hotkey, combo)
+            except Exception: pass
+    await unregister_hotkey(bot_config.ENABLE_GLOBAL_HOTKEY, bot_config.GLOBAL_HOTKEY_COMBINATION, "skip")
+    await unregister_hotkey(bot_config.ENABLE_GLOBAL_MSKIP, bot_config.GLOBAL_HOTKEY_MSKIP, "mskip")
+    await unregister_hotkey(bot_config.ENABLE_GLOBAL_MPAUSE, bot_config.GLOBAL_HOTKEY_MPAUSE, "mpause")
+    await unregister_hotkey(bot_config.ENABLE_GLOBAL_MVOLUP, bot_config.GLOBAL_HOTKEY_MVOLUP, "mvolup")
+    await unregister_hotkey(bot_config.ENABLE_GLOBAL_MVOLDOWN, bot_config.GLOBAL_HOTKEY_MVOLDOWN, "mvoldown")
+    if bot.voice_client_music and bot.voice_client_music.is_connected():
+        await bot.voice_client_music.disconnect()
+    await bot.close()
+
+@bot.command(name='hush')
+@require_allowed_user()
+@handle_errors
+async def hush(ctx) -> None:
+    async with state.vc_lock: state.hush_override_active = True
+    streaming_vc = ctx.guild.get_channel(bot_config.STREAMING_VC_ID)
+    if streaming_vc:
+        impacted = []
+        for member in streaming_vc.members:
+            if not member.bot and member.id not in bot_config.ALLOWED_USERS:
+                try: await member.edit(mute=True); impacted.append(member.name)
+                except Exception as e: logger.error(f"Error muting {member.name}: {e}")
+        await ctx.send("Muted: " + ", ".join(impacted) if impacted else "No users muted.")
+    else: await ctx.send("Streaming VC not found.")
+
+@bot.command(name='secret')
+@require_allowed_user()
+@handle_errors
+async def secret(ctx) -> None:
+    async with state.vc_lock: state.hush_override_active = True
+    streaming_vc = ctx.guild.get_channel(bot_config.STREAMING_VC_ID)
+    if streaming_vc:
+        impacted = []
+        for member in streaming_vc.members:
+            if not member.bot and member.id not in bot_config.ALLOWED_USERS:
+                try: await member.edit(mute=True, deafen=True); impacted.append(member.name)
+                except Exception as e: logger.error(f"Error muting/deafening {member.name}: {e}")
+        await ctx.send("Muted & Deafened: " + ", ".join(impacted) if impacted else "No users to mute/deafen.")
+    else: await ctx.send("Streaming VC not found.")
+
+@bot.command(name='rhush', aliases=['removehush'])
+@require_allowed_user()
+@handle_errors
+async def rhush(ctx) -> None:
+    async with state.vc_lock: state.hush_override_active = False
+    streaming_vc = ctx.guild.get_channel(bot_config.STREAMING_VC_ID)
+    if streaming_vc:
+        impacted = []
+        for member in streaming_vc.members:
+            if not member.bot and (is_user_in_streaming_vc_with_camera(member) or member.id in bot_config.ALLOWED_USERS):
+                try: await member.edit(mute=False); impacted.append(member.name)
+                except Exception as e: logger.error(f"Error unmuting {member.name}: {e}")
+        await ctx.send("Unmuted: " + ", ".join(impacted) if impacted else "No users to unmute.")
+    else: await ctx.send("Streaming VC not found.")
+
+@bot.command(name='rsecret', aliases=['removesecret'])
+@require_allowed_user()
+@handle_errors
+async def rsecret(ctx) -> None:
+    async with state.vc_lock: state.hush_override_active = False
+    streaming_vc = ctx.guild.get_channel(bot_config.STREAMING_VC_ID)
+    if streaming_vc:
+        impacted = []
+        for member in streaming_vc.members:
+            if not member.bot and (is_user_in_streaming_vc_with_camera(member) or member.id in bot_config.ALLOWED_USERS):
+                try: await member.edit(mute=False, deafen=False); impacted.append(member.name)
+                except Exception as e: logger.error(f"Error removing mute/deafen from {member.name}: {e}")
+        await ctx.send("Unmuted & Undeafened: " + ", ".join(impacted) if impacted else "No users to unmute/undeafen.")
+    else: await ctx.send("Streaming VC not found.")
+
+@bot.command(name='modoff')
+@require_allowed_user()
+@handle_errors
+async def modoff(ctx):
+    async with state.vc_lock: state.vc_moderation_active = False
+    logger.warning(f"VC Moderation DISABLED by {ctx.author.name}")
+    await ctx.send("🛡️ VC Moderation has been temporarily **DISABLED**.")
+
+@bot.command(name='modon')
+@require_allowed_user()
+@handle_errors
+async def modon(ctx):
+    async with state.vc_lock: state.vc_moderation_active = True
+    logger.warning(f"VC Moderation ENABLED by {ctx.author.name}")
+    await ctx.send("🛡️ VC Moderation has been **ENABLED**.")
+
+@bot.command(name='disablenotifications')
+@require_allowed_user()
+@handle_errors
+async def disablenotifications(ctx):
+    """Disables certain server event notifications."""
+    if not state.notifications_enabled:
+        await ctx.send("❌ Notifications are already disabled.", delete_after=10)
+        return
+    state.notifications_enabled = False
+    await ctx.send("✅ Notifications for unbans, leaves, kicks, and timeout removals have been **DISABLED**.")
+    logger.info(f"Notifications DISABLED by {ctx.author.name}")
+
+@bot.command(name='enablenotifications')
+@require_allowed_user()
+@handle_errors
+async def enablenotifications(ctx):
+    """Enables certain server event notifications."""
+    if state.notifications_enabled:
+        await ctx.send("✅ Notifications are already enabled.", delete_after=10)
+        return
+    state.notifications_enabled = True
+    await ctx.send("✅ Notifications for unbans, leaves, kicks, and timeout removals have been **ENABLED**.")
+    logger.info(f"Notifications ENABLED by {ctx.author.name}")
+
+@bot.command(name='moff')
+@require_admin_preconditions()
+@handle_errors
+async def moff(ctx):
+    if not state.music_enabled:
+        await ctx.send("Music features are already disabled.", delete_after=10)
+        return
+
+    logger.warning(f"Music features DISABLED by {ctx.author.name}")
+    state.music_enabled = False
+
+    async with state.music_lock:
+        state.search_queue.clear()
+        state.active_playlist.clear()
+        state.current_song = None
+        state.is_music_playing = False
+        state.is_music_paused = False
+        state.stop_after_clear = True 
+        
+        if bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()):
+            bot.voice_client_music.stop()
+
+    if bot.voice_client_music and bot.voice_client_music.is_connected():
+        await bot.voice_client_music.disconnect(force=True)
+        bot.voice_client_music = None
+    
+    await bot.change_presence(activity=None)
+    await ctx.send("❌ Music features have been **DISABLED** and the player has been disconnected.")
+
+
+@bot.command(name='mon')
+@require_admin_preconditions()
+@handle_errors
+async def mon(ctx):
+    if state.music_enabled:
+        await ctx.send("Music features are already enabled.", delete_after=10)
+        return
+    
+    logger.warning(f"Music features ENABLED by {ctx.author.name}")
+    state.music_enabled = True
+
+    await ctx.send("✅ Music features have been **ENABLED**. Connecting to voice...")
+    
+    await start_music_playback()
+
+
+@bot.command(name='disable')
+@require_allowed_user()
+@handle_errors
+async def disable(ctx, user: discord.User):
+    if not user:
+        await ctx.send("Could not find that user.")
+        return
+
+    if user.id in bot_config.ALLOWED_USERS:
+        await ctx.send("Cannot disable Allowed Users.")
+        return
+
+    async with state.moderation_lock:
+        if user.id in state.omegle_disabled_users:
+            await ctx.send(f"User {user.mention} is already disabled.")
+            return
+        state.omegle_disabled_users.add(user.id)
+    await ctx.send(f"✅ User {user.mention} has been **disabled** from using any commands.")
+    logger.info(f"User {user.name} disabled from all commands by {ctx.author.name}.")
+
+
+@bot.command(name='enable')
+@require_allowed_user()
+@handle_errors
+async def enable(ctx, user: discord.User):
+    if not user:
+        await ctx.send("Could not find that user.")
+        return
+    async with state.moderation_lock:
+        if user.id not in state.omegle_disabled_users:
+            await ctx.send(f"User {user.mention} is not disabled.")
+            return
+        state.omegle_disabled_users.remove(user.id)
+    await ctx.send(f"✅ User {user.mention} has been **re-enabled** and can use commands again.")
+    logger.info(f"User {user.name} re-enabled for all commands by {ctx.author.name}.")
+
+
+@bot.command(name='ban')
+@require_allowed_user()
+@handle_errors
+async def ban(ctx, *, user_input_str: str):
+    """Bans one or more users by ID or mention with confirmation and a reason prompt. Usage: !ban <@user1 or id1> <@user2 or id2>..."""
+    potential_users = user_input_str.split()
+    if not potential_users:
+        await ctx.send("Usage: `!ban <@user or user_id> [@user2 or user_id2] ...`")
+        return
+
+    users_to_ban = []
+    failed_to_find = []
+    for p_user in potential_users:
+        user_id = None
+        match = re.match(r'<@!?(\d+)>$', p_user)
+        if match:
+            user_id = match.group(1)
+        elif p_user.isdigit():
+            user_id = p_user
+        
+        if user_id:
+            try:
+                user_to_ban = await bot.fetch_user(int(user_id))
+                users_to_ban.append(user_to_ban)
+            except discord.NotFound:
+                failed_to_find.append(f"`{p_user}` (User not found)")
+            except Exception as e:
+                failed_to_find.append(f"`{p_user}` (Error: {e})")
+        else:
+            failed_to_find.append(f"`{p_user}` (Invalid ID or mention format)")
+
+
+    if not users_to_ban:
+        await ctx.send("Could not find any valid users to ban.\n" + "\n".join(failed_to_find))
+        return
+
+    # --- Step 1: Confirmation ---
+    user_list_str = "\n".join([f"- **{user.name}** (`{user.id}`)" for user in users_to_ban])
+    confirm_msg_content = f"⚠️ **Are you sure you want to ban the following user(s)?**\n{user_list_str}\n\nReact with ✅ to confirm or ❌ to cancel."
+    
+    confirm_msg = await ctx.send(confirm_msg_content)
+    for emoji in ("✅", "❌"): await confirm_msg.add_reaction(emoji)
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in {"✅", "❌"} and reaction.message.id == confirm_msg.id
+
+    try:
+        reaction, _ = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+        if str(reaction.emoji) == "❌":
+            await confirm_msg.edit(content="🟢 Ban command cancelled.", view=None)
+            return
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(content="⌛ Ban command timed out.", view=None)
+        return
+    finally:
+        try: await confirm_msg.clear_reactions()
+        except discord.HTTPException: pass
+
+    # --- Step 2: Ask for Reason ---
+    try:
+        await confirm_msg.edit(content="📝 **Please provide a reason for the ban.**\nYour next message in this channel will be used as the reason. You have 2 minutes.", view=None)
+    except discord.NotFound: # If the original message was deleted somehow
+        confirm_msg = await ctx.send("📝 **Please provide a reason for the ban.**\nYour next message in this channel will be used as the reason. You have 2 minutes.")
+
+
+    def reason_check(message):
+        return message.author == ctx.author and message.channel == ctx.channel
+
+    try:
+        reason_message = await bot.wait_for("message", timeout=120.0, check=reason_check)
+        reason_text = reason_message.content
+        try:
+            await reason_message.delete() # Clean up the reason message
+        except (discord.Forbidden, discord.NotFound):
+            pass # Ignore if we can't delete it
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(content="⌛ Reason prompt timed out. Ban command cancelled.", view=None)
+        return
+
+    # --- Step 3: Apply Bans ---
+    await confirm_msg.edit(content=f"⏳ Banning {len(users_to_ban)} user(s) with reason: *{reason_text}*", view=None)
+    
+    successes = []
+    failures = failed_to_find  # Start with users we couldn't find
+    final_reason = f"Banned by {ctx.author.name} (ID: {ctx.author.id}): {reason_text}"
+
+    for user_to_ban in users_to_ban:
+        try:
+            await ctx.guild.ban(user_to_ban, reason=final_reason, delete_message_days=0)
+            successes.append(f"`{user_to_ban.name}` (ID: {user_to_ban.id})")
+            logger.info(f"Successfully banned user {user_to_ban.name} (ID: {user_to_ban.id}) on behalf of {ctx.author.name}.")
+        except discord.Forbidden:
+            failures.append(f"`{user_to_ban.name}` (Missing permissions to ban this user)")
+        except discord.HTTPException as e:
+            failures.append(f"`{user_to_ban.name}` (Failed due to a network error: {e})")
+        except Exception as e:
+            failures.append(f"`{user_to_ban.name}` (An unexpected error occurred: {e})")
+            logger.error(f"Unexpected error during !ban for {user_to_ban.name}: {e}", exc_info=True)
+
+    response_message = ""
+    if successes:
+        response_message += f"✅ **Successfully banned:**\n" + "\n".join(f"- {s}" for s in successes)
+    if failures:
+        response_message += f"\n\n❌ **Failed actions:**\n" + "\n".join(f"- {f}" for f in failures)
+    
+    await confirm_msg.edit(content=response_message)
+
+
+@bot.command(name='unban')
+@require_allowed_user()
+@handle_errors
+async def unban(ctx, *, user_ids_str: str):
+    """Unbans one or more users by ID with confirmation. Usage: !unban <id1>,<id2>,..."""
+    if not user_ids_str:
+        await ctx.send("Usage: `!unban <user_id_1>, <user_id_2>, ...`")
+        return
+    
+    user_ids = [uid.strip() for uid in user_ids_str.split(',')]
+    
+    users_to_unban = []
+    failed_to_find = []
+    
+    banned_users = {entry.user.id: entry.user async for entry in ctx.guild.bans()}
+
+    for user_id in user_ids:
+        try:
+            user_id_int = int(user_id)
+            if user_id_int in banned_users:
+                users_to_unban.append(banned_users[user_id_int])
+            else:
+                failed_to_find.append(f"`{user_id}` (User is not banned or does not exist)")
+        except ValueError:
+            failed_to_find.append(f"`{user_id}` (Invalid ID format)")
+
+    if not users_to_unban:
+        await ctx.send("Could not find any valid banned users to unban.\n" + "\n".join(failed_to_find))
+        return
+
+    user_list_str = "\n".join([f"- **{user.name}** (`{user.id}`)" for user in users_to_unban])
+    confirm_msg_content = f"⚠️ **Are you sure you want to unban the following user(s)?**\n{user_list_str}\n\nReact with ✅ to confirm or ❌ to cancel."
+    
+    confirm_msg = await ctx.send(confirm_msg_content)
+    for emoji in ("✅", "❌"): await confirm_msg.add_reaction(emoji)
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in {"✅", "❌"} and reaction.message.id == confirm_msg.id
+
+    try:
+        reaction, _ = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+        if str(reaction.emoji) == "❌":
+            await confirm_msg.edit(content="🟢 Unban command cancelled.", view=None)
+            return
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(content="⌛ Unban command timed out.", view=None)
+        return
+
+    await confirm_msg.edit(content="⏳ Unbanning users...", view=None)
+    successes = []
+    failures = failed_to_find
+    for user_to_unban in users_to_unban:
+        try:
+            reason = f"Unbanned by {ctx.author.name} (ID: {ctx.author.id}) via bot command."
+            await ctx.guild.unban(user_to_unban, reason=reason)
+            successes.append(f"`{user_to_unban.name}` (ID: {user_to_unban.id})")
+        except Exception as e:
+            failures.append(f"`{user_to_unban.name}` (Failed to unban: {e})")
+
+    response_message = ""
+    if successes:
+        response_message += f"✅ **Successfully unbanned:**\n" + "\n".join(f"- {s}" for s in successes)
+    if failures:
+        response_message += f"\n\n❌ **Failed actions:**\n" + "\n".join(f"- {f}" for f in failures)
+    
+    await confirm_msg.edit(content=response_message)
+
+
+@bot.command(name='unbanall')
+@require_allowed_user()
+@handle_errors
+async def unbanall(ctx):
+    """Unbans all users from the server with confirmation."""
+    ban_entries = [entry async for entry in ctx.guild.bans()]
+    
+    if not ban_entries:
+        await ctx.send("There are no users currently banned from this server.")
+        return
+
+    confirm_msg_content = f"⚠️ **CRITICAL ACTION** ⚠️\n\nAre you sure you want to unban all **{len(ban_entries)}** users from the server? This cannot be undone.\n\nReact with ✅ to confirm or ❌ to cancel."
+    
+    confirm_msg = await ctx.send(confirm_msg_content)
+    for emoji in ("✅", "❌"): await confirm_msg.add_reaction(emoji)
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in {"✅", "❌"} and reaction.message.id == confirm_msg.id
+
+    try:
+        reaction, _ = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+        if str(reaction.emoji) == "❌":
+            await confirm_msg.edit(content="🟢 Unban All command cancelled.", view=None)
+            return
+    except asyncio.TimeoutError:
+        await confirm_msg.edit(content="⌛ Unban All command timed out.", view=None)
+        return
+
+    await confirm_msg.edit(content=f"⏳ Unbanning all {len(ban_entries)} users...", view=None)
+    
+    success_count = 0
+    failures = []
+    
+    for ban_entry in ban_entries:
+        try:
+            reason = f"Mass unban by {ctx.author.name} (ID: {ctx.author.id})."
+            await ctx.guild.unban(ban_entry.user, reason=reason)
+            success_count += 1
+            await asyncio.sleep(1) # Sleep to avoid hitting rate limits on large servers
+        except Exception as e:
+            failures.append(f"`{ban_entry.user.name}` (ID: {ban_entry.user.id}) - Error: {e}")
+
+    response_message = f"✅ **Finished. Unbanned {success_count} of {len(ban_entries)} users.**"
+    if failures:
+        response_message += f"\n\n❌ **Failed to unban:**\n" + "\n".join(f"- {f}" for f in failures)
+    
+    await confirm_msg.edit(content=response_message)
+
+
+# --- Commands Delegated to BotHelper ---
+@bot.command(name='bans', aliases=['banned'])
+@require_admin_preconditions()
+@handle_errors
+async def bans(ctx) -> None: await helper.show_bans(ctx)
+
+@bot.command(name='top')
+@require_allowed_user()
+@handle_errors
+async def top_members(ctx) -> None: await helper.show_top_members(ctx)
+
+@bot.command(name='info', aliases=['about'])
+@require_user_preconditions()
+@handle_errors
+async def info(ctx) -> None: await helper.show_info(ctx)
+
+@bot.command(name='roles')
+@require_allowed_user()
+@handle_errors
+async def roles(ctx) -> None: await helper.list_roles(ctx)
+
+@bot.command(name='admin', aliases=['owner', 'admins', 'owners'])
+@require_allowed_user()
+@handle_errors
+async def admin(ctx) -> None: await helper.show_admin_list(ctx)
+
+@bot.command(name='commands')
+@require_admin_preconditions()
+@handle_errors
+async def commands_list(ctx) -> None: await helper.show_commands_list(ctx)
+
+@bot.command(name='whois')
+@require_allowed_user()
+@handle_errors
+async def whois(ctx) -> None: await helper.show_whois(ctx)
+
+@bot.command(name='rtimeouts')
+@require_admin_preconditions()
+@handle_errors
+async def remove_timeouts(ctx) -> None: await helper.remove_timeouts(ctx)
+
+@bot.command(name='rules')
+@require_user_preconditions()
+@handle_errors
+async def rules(ctx) -> None: await helper.show_rules(ctx)
+
+@bot.command(name='timeouts')
+@require_admin_preconditions()
+@handle_errors
+async def timeouts(ctx) -> None: await helper.show_timeouts(ctx)
+
+@bot.command(name='times')
+@require_user_preconditions()
+@handle_errors
+async def time_report(ctx) -> None: await helper.show_times_report(ctx)
+
+@bot.command(name='stats')
+@require_allowed_user()
+@handle_errors
+async def analytics_report(ctx) -> None: await helper.show_analytics_report(ctx)
+
+@bot.command(name='join')
+@require_allowed_user()
+@handle_errors
+async def join(ctx) -> None: await helper.send_join_invites(ctx)
+
+@bot.command(name='clearstats')
+@require_allowed_user()
+@handle_errors
+async def clear_stats(ctx) -> None:
+    record_command_usage(state.analytics, "!clearstats")
+    record_command_usage_by_user(state.analytics, ctx.author.id, "!clearstats")
+    await helper.clear_stats(ctx)
+
+@bot.command(name='clearwhois')
+@require_allowed_user()
+@handle_errors
+async def clear_whois(ctx) -> None:
+    record_command_usage(state.analytics, "!clearwhois")
+    record_command_usage_by_user(state.analytics, ctx.author.id, "!clearwhois")
+    await helper.clear_whois_data(ctx)
+
+@bot.command(name='display')
+@require_admin_preconditions()
+@handle_errors
+async def display(ctx, member: discord.Member) -> None:
+    await helper.show_user_display(ctx, member)
+
+@display.error
+async def display_error(ctx, error: Exception) -> None:
+    if isinstance(error, commands.MemberNotFound):
+        await ctx.send(f"Could not find a member in this server with the input: `{error.argument}`")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Usage: `!display <@user or user_id>`")
+    else:
+        logger.error(f"Error in display command: {error}", exc_info=True)
+        await ctx.send("An unexpected error occurred.")
+
+
+#########################################
+# Main Execution
+#########################################
+if __name__ == "__main__":
+    required_vars = ["BOT_TOKEN"]
+    if missing := [var for var in required_vars if not os.getenv(var)]:
+        logger.critical(f"Missing environment variables: {', '.join(missing)}")
+        sys.exit(1)
+
+    def handle_shutdown(signum, _frame):
+        logger.info("Graceful shutdown initiated by signal")
+        if not getattr(bot, "_is_shutting_down", False):
+            bot.loop.create_task(_initiate_shutdown(None))
+
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
+    try:
+        bot.run(os.getenv("BOT_TOKEN"))
+    except discord.LoginFailure as e:
+        logger.critical(f"Invalid token: {e}"); sys.exit(1)
+    except Exception as e:
+        logger.critical(f"Fatal error during bot run: {e}", exc_info=True); raise
+    finally:
+        logger.info("Starting final shutdown process...")
+        async def unregister_all_hotkeys():
+            async def unregister_hotkey(enabled, combo, name):
+                if enabled:
+                    try: await asyncio.to_thread(keyboard.remove_hotkey, combo)
+                    except Exception: pass
+            if bot_config := globals().get('bot_config'):
+                await unregister_hotkey(bot_config.ENABLE_GLOBAL_HOTKEY, bot_config.GLOBAL_HOTKEY_COMBINATION, "skip")
+                await unregister_hotkey(bot_config.ENABLE_GLOBAL_MSKIP, bot_config.GLOBAL_HOTKEY_MSKIP, "mskip")
+                await unregister_hotkey(bot_config.ENABLE_GLOBAL_MPAUSE, bot_config.GLOBAL_HOTKEY_MPAUSE, "mpause")
+                await unregister_hotkey(bot_config.ENABLE_GLOBAL_MVOLUP, bot_config.GLOBAL_HOTKEY_MVOLUP, "mvolup")
+                await unregister_hotkey(bot_config.ENABLE_GLOBAL_MVOLDOWN, bot_config.GLOBAL_HOTKEY_MVOLDOWN, "mvoldown")
+        if 'keyboard' in globals(): asyncio.run(unregister_all_hotkeys())
+        if 'omegle_handler' in globals() and omegle_handler.driver: asyncio.run(omegle_handler.close())
+        if 'state' in globals():
+            logger.info("Performing final state save..."); asyncio.run(save_state_async())
+        logger.info("Shutdown complete")
