@@ -1,6 +1,6 @@
-# SkipCord-2: Omegle Streaming & Music Bot for Discord
+# SkipCord-3: Omegle Streaming & Music Bot for Discord
 
-SkipCord-2 is a powerful, fully modular Discord bot designed for streamers who use Omegle or similar platforms. It allows streamers to share their experience in a Discord voice channel, giving everyone control via an interactive button menu. The bot includes advanced moderation, detailed logging, automated rule enforcement, and a complete music bot feature set, all built on a fully asynchronous architecture for rock-solid performance.
+SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who use Omegle or similar platforms. It allows streamers to share their experience in a Discord voice channel, giving everyone control via an interactive button menu. The bot includes advanced moderation, detailed logging, automated rule enforcement, and a complete music bot feature set, all built on a fully asynchronous architecture for rock-solid performance.
 
 ## Key Features
 
