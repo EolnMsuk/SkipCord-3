@@ -1,12 +1,6 @@
-Of course\! I've revamped your `README.md` to be more organized, visually appealing with professional emojis, and clearer for new users. I've also added the command aliases found in your code for completeness.
+# SkipCord-3: 🚀 Advanced Omegle Streaming & Music Bot for Discord
 
-Here is the updated file:
-
------
-
-# SkipCord-2: 🚀 Advanced Omegle Streaming & Music Bot for Discord
-
-SkipCord-2 is a powerful, fully modular Discord bot designed for streamers who use Omegle or similar platforms. It seamlessly integrates a shared streaming experience into a Discord voice channel, empowering the audience with control through a clean, interactive button menu. The bot features advanced moderation, detailed logging, automated rule enforcement, and a complete music system, all built on a fully asynchronous architecture for rock-solid performance.
+SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who use Omegle or similar platforms. It seamlessly integrates a shared streaming experience into a Discord voice channel, empowering the audience with control through a clean, interactive button menu. The bot features advanced moderation, detailed logging, automated rule enforcement, and a complete music system, all built on a fully asynchronous architecture for rock-solid performance.
 
 -----
 
