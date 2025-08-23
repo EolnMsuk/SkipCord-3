@@ -166,7 +166,7 @@ COMMAND_CHANNEL_ID = 123456789012345678      # Channel for bot commands and menu
 CHAT_CHANNEL_ID = 123456789012345678         # Channel for join/leave/ban notifications
 STREAMING_VC_ID = 123456789012345678         # Main streaming/music voice channel
 PUNISHMENT_VC_ID = 123456789012345678        # VC where users are moved for a first violation
-OMEGLE_VIDEO_URL = "https://example.com"     # URL for the streaming website
+OMEGLE_VIDEO_URL = "https://uhmegle.com/video"     # URL for the streaming website
 # Find by going to edge://version/ in your browser and copying the "Profile path"
 EDGE_USER_DATA_DIR = "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data"
 
