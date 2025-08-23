@@ -530,7 +530,12 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
                     state.current_song['title'] = song_display_name
         else:
             logger.info(f"Processing as a local file: '{os.path.basename(song_path_or_url)}'.")
-            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, options="-vn -loglevel error"), volume=volume)
+            if state.config.NORMALIZE_LOCAL_MUSIC:
+                logger.debug("Normalizing local file audio with loudnorm.")
+                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, **FFMPEG_OPTIONS), volume=volume)
+            else:
+                logger.debug("Playing local file without normalization.")
+                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, options="-vn -loglevel error"), volume=volume)
 
         logger.debug("Audio source created successfully. Attempting to play.")
         bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_song(e), bot.loop))
@@ -1738,9 +1743,7 @@ async def msearch(ctx, *, query: str):
     search_query = query.strip()
     status_msg = await ctx.send(f"⏳ Searching for `{search_query}`...")
 
-    # --- CHANGE 1: Add this new variable to detect if the query is a URL ---
     is_url_search = 'http' in search_query.lower()
-
     all_hits = []
     is_youtube_search = False
 
@@ -1858,19 +1861,6 @@ async def msearch(ctx, *, query: str):
         await status_msg.edit(content=f"❌ No songs found matching `{search_query}`.")
         return
 
-    if len(all_hits) == 1:
-        song_to_add = all_hits[0]
-        if await is_song_in_queue(state, song_to_add['path']):
-            await status_msg.edit(content=f"⚠️ **{song_to_add['title']}** is already in the queue.")
-            return
-        async with state.music_lock:
-            state.search_queue.append(song_to_add)
-            was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
-        await status_msg.edit(content=f"✅ Queued: **{song_to_add['title']}**")
-        if was_idle: await play_next_song()
-        return
-    
-    # --- CHANGE 2: Modify this condition to correctly handle playlist URLs ---
     if len(all_hits) > 1 and is_url_search:
         added_count, skipped_count, was_idle = 0, 0, False
         async with state.music_lock:
