@@ -1,0 +1,8 @@
+discord.py[voice]
+python-dotenv
+loguru
+selenium
+keyboard
+yt-dlp
+mutagen
+pyautogui
