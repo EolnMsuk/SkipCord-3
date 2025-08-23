@@ -1,3 +1,5 @@
+Of course\! Here is the updated `README.md` file with detailed instructions for setting up Spotify API compatibility, along with other improvements based on the provided code.
+
 # SkipCord-3: 🚀 Advanced Omegle Streaming & Music Bot for Discord
 
 SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who use Omegle or similar platforms. It seamlessly integrates a shared streaming experience into a Discord voice channel, empowering the audience with control through a clean, interactive button menu. The bot features advanced moderation, detailed logging, automated rule enforcement, and a complete music system, all built on a fully asynchronous architecture for rock-solid performance.
@@ -21,7 +23,7 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 
 ### 🎵 Integrated Music System
 
-  * **Versatile Playback**: Play songs from YouTube or Spotify (URLs or search terms) and local files.
+  * **Versatile Playback**: Play songs from **YouTube** or **Spotify** (URLs or search terms) and local files. Spotify integration allows for adding single tracks, albums, or entire playlists to the queue.
   * **Interactive Queue**: View the song queue with `!q` and instantly jump to any song using a dropdown menu.
   * **Persistent Playlists**: Save the current queue as a named playlist, then load, list, or delete playlists at any time.
   * **Multiple Playback Modes**: Effortlessly cycle between **Shuffle**, **Alphabetical**, and **Loop** modes.
@@ -112,9 +114,9 @@ The bot keeps administrators informed with a robust, event-driven notification s
   * **🖥️ Microsoft Edge**: Ensure the Edge browser is installed and up-to-date.
   * **🐍 Python 3.9+**: Install from [python.org](https://www.python.org/downloads/). Make sure to check **"Add Python to PATH"** during installation.
   * **🎵 FFmpeg**: Required for music playback. Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to your system's PATH.
-  * **📦 Dependencies**: Open `cmd.exe` as an Administrator, then paste and run the following command:
+  * **📦 Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
     ```
-    pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp
+    pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spotipy pyautogui
     ```
 
 ### 2\. Create a Discord Bot
@@ -123,21 +125,39 @@ The bot keeps administrators informed with a robust, event-driven notification s
 2.  Go to the **"Bot"** tab and enable the following **Privileged Gateway Intents**:
       * ✅ **Message Content Intent**
       * ✅ **Server Members Intent**
-3.  Click **"Reset Token"** to reveal your bot's token. Copy it and keep it secret.
+3.  Click **"Reset Token"** to reveal your bot's token. **Copy this value immediately and store it securely.**
 4.  Go to the **"OAuth2" -\> "URL Generator"** tab. Select the `bot` and `applications.commands` scopes.
 5.  In the "Bot Permissions" section, select `Administrator`.
 6.  Copy the generated URL and use it to invite the bot to your server.
 
-### 3\. File Setup
+### 3\. Set up Spotify API (Optional)
+
+To enable playing songs, albums, and playlists from Spotify links, you need API credentials.
+
+1.  Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/) and log in.
+2.  Click **"Create app"**.
+3.  Give your app a **Name** and **Description** (e.g., "SkipCord Bot") and agree to the terms.
+4.  Once created, you will see your **Client ID**. Click **"Show client secret"** to reveal the **Client Secret**.
+5.  **Copy both the Client ID and Client Secret.** You will need them for the next step.
+
+### 4\. File Setup
 
 1.  Create a folder for your bot and place all the provided Python files (`bot.py`, `helper.py`, `omegle.py`, `tools.py`) inside.
+
 2.  Create a new file named `.env` in the same folder.
-3.  Add the following line to the `.env` file, replacing `your_token_here` with your bot token:
-    ```
-    BOT_TOKEN=your_token_here
+
+3.  Open the `.env` file and add your credentials in the following format. Replace the placeholder text with the actual values you copied.
+
+    ```env
+    # .env file
+    BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
+    SPOTIPY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID_HERE
+    SPOTIPY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET_HERE
     ```
 
-### 4\. Configure `config.py`
+    > **Note:** If you are not setting up Spotify, you can leave the `SPOTIPY` lines blank, but the `BOT_TOKEN` is required.
+
+### 5\. Configure `config.py`
 
 Open `config.py` and replace the placeholder values with your server's specific IDs and settings. To get IDs, enable Developer Mode in Discord, then right-click a server, channel, or user and select "Copy ID".
 
@@ -206,8 +226,9 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
 
 ### 🔧 Troubleshooting
 
-  * **Token Error**: Ensure your `.env` file is correctly named, in the same folder, and contains the correct token.
-  * **Edge Won't Launch**: Double-check that the `EDGE_USER_DATA_DIR` path in `config.py` is absolutely correct.
+  * **Token Error**: Ensure your `.env` file is correctly named (it must be `.env`, not `env.txt`), is in the same folder as `bot.py`, and contains the correct Discord bot token.
+  * **Edge Won't Launch**: Double-check that the `EDGE_USER_DATA_DIR` path in `config.py` is absolutely correct and matches your system.
   * **"WebDriver" Error**: Make sure your Edge browser is fully updated. Selenium's automatic driver management requires an up-to-date browser.
   * **Music Doesn't Play**: Confirm that **FFmpeg** is installed and its location is included in your system's PATH environment variable.
+  * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct and have no extra spaces.
   * **Other Issues**: Check the `bot.log` file in the bot's folder for detailed error messages.
