@@ -113,7 +113,9 @@ YDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'default_search': 'auto',
-    'source_address': '0.0.0.0'
+    'source_address': '0.0.0.0',
+    'no_playlist_index': True, 
+    'yes_playlist': True, # Add this more forceful line
 }
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -1727,6 +1729,31 @@ async def volume(ctx, level: int):
             bot.voice_client_music.source.volume = new_volume
     await ctx.send(f"Volume set to {level}%", delete_after=5)
     logger.info(f"Volume set to {level}% ({state.music_volume}) by {ctx.author.name}")
+    
+def extract_youtube_url(query: str) -> Optional[str]:
+    """
+    Finds and extracts a canonical YouTube URL from a string, handling various formats.
+    """
+    # This regex covers:
+    # - youtube.com/watch?v=...
+    # - youtu.be/...
+    # - music.youtube.com/watch?v=...
+    # - youtube.com/shorts/...
+    # - youtube.com/embed/...
+    # - youtube.com/v/...
+    pattern = re.compile(
+        r'(?:https?://)?(?:www\.)?'
+        r'(?:m\.)?(?:music\.)?'
+        r'(?:youtube\.com|youtu\.be)/'
+        r'(?:watch\?v=|embed/|v/|shorts/)?'
+        r'([\w-]{11})' # This captures the 11-character video ID
+    )
+    match = pattern.search(query)
+    if match:
+        video_id = match.group(1)
+        # Return a clean, standard URL format that yt-dlp loves
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return None
 
 @bot.command(name='msearch', aliases=['m'])
 @require_user_preconditions()
@@ -1742,126 +1769,155 @@ async def msearch(ctx, *, query: str):
 
     search_query = query.strip()
     status_msg = await ctx.send(f"⏳ Searching for `{search_query}`...")
+    
+    # --- Use the helper to clean the input query ---
+    # If a YouTube link is found, it's extracted. Otherwise, it uses the original query.
+    clean_query = extract_youtube_url(search_query) or search_query
 
-    is_url_search = 'http' in search_query.lower()
     all_hits = []
     is_youtube_search = False
 
-    # --- 1. SPOTIFY API HANDLING ---
-    spotify_match = re.search(r'https?://(open\.spotify\.com|spotify\.link)/.+', search_query)
+    url_pattern = re.compile(
+        r'https?://(www\.)?'
+        r'(youtube|youtu|soundcloud|spotify|bandcamp)\.(com|be)/'
+        r'.+'
+    )
     
-    if spotify_match:
+    is_spotify_url = 'spotify' in clean_query.lower()
+    is_generic_url = url_pattern.match(clean_query)
+
+    # --- 1. SPOTIFY API HANDLING ---
+    if is_spotify_url:
         if not sp:
             await status_msg.edit(content="❌ Spotify support is not configured. Missing credentials in `.env` file.")
             return
         
-        spotify_url = spotify_match.group(0)
-
-        await status_msg.edit(content="Spotify link detected. Fetching metadata from Spotify API...")
+        await status_msg.edit(content=f"Spotify link detected. Fetching metadata from Spotify API...")
         try:
             tracks_to_search = []
-            if '/track/' in spotify_url:
-                track_info = sp.track(spotify_url)
+            if '/track/' in clean_query:
+                track_info = sp.track(clean_query)
                 if track_info: tracks_to_search.append(track_info)
-            elif '/album/' in spotify_url:
-                results = sp.album_tracks(spotify_url)
+            elif '/album/' in clean_query:
+                results = sp.album_tracks(clean_query)
                 if results: tracks_to_search.extend(results['items'])
-            elif '/playlist/' in spotify_url:
-                results = sp.playlist_tracks(spotify_url)
+            elif '/playlist/' in clean_query:
+                results = sp.playlist_tracks(clean_query)
                 if results: tracks_to_search.extend(item['track'] for item in results['items'] if item['track'])
-            else:
-                await status_msg.edit(content="Unsupported Spotify URL type."); return
-
+            
             if not tracks_to_search:
-                raise ValueError("Could not retrieve any tracks from the Spotify URL. It may be empty or private.")
+                raise ValueError("Could not retrieve any tracks from the Spotify URL.")
 
-            youtube_queries = []
-            for track in tracks_to_search:
-                if not track or not track.get('name'): continue
-                title = track['name']
-                artists = track.get('artists', [])
-                artist_name = artists[0]['name'] if artists else ""
-                youtube_queries.append(f"{artist_name} {title}")
-
+            youtube_queries = [f"{track['artists'][0]['name']} {track['name']}" for track in tracks_to_search if track and track.get('name') and track.get('artists')]
+            
             if not youtube_queries:
                 raise ValueError("Could not extract any song titles from the Spotify link.")
 
-            await status_msg.edit(content=f"⏳ Found {len(youtube_queries)} track(s). Searching for matches on YouTube in the background...")
-
+            await status_msg.edit(content=f"⏳ Found {len(youtube_queries)} track(s). Searching on YouTube...")
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                 for yt_query in youtube_queries:
                     try:
                         search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch1:{yt_query}", download=False)
                         if search_results and search_results.get('entries'):
                             video_info = search_results['entries'][0]
-                            raw_title = video_info.get('title', 'Unknown Title')
-                            creator = video_info.get('uploader', video_info.get('artist', ''))
-                            display_title = f"{creator} - {raw_title}" if creator and creator not in raw_title else raw_title
                             all_hits.append({
-                                'title': display_title,
+                                'title': video_info.get('title', 'Unknown Title'),
                                 'path': video_info.get('webpage_url', video_info.get('url')),
                                 'is_stream': True, 'ctx': ctx
                             })
                     except Exception:
-                         logger.warning(f"Could not find a YouTube match for '{yt_query}'")
-            
-            if not all_hits:
-                await ctx.send("✅ Successfully read the Spotify link, but could not find any of the songs on YouTube.")
-                try: await status_msg.delete()
-                except discord.NotFound: pass
-                return
-
-        except ValueError as e:
-            logger.error(f"ValueError processing Spotify link {search_query}: {e}")
-            await status_msg.edit(content=f"❌ {e}")
-            return
+                        logger.warning(f"Could not find a YouTube match for Spotify query '{yt_query}'")
         except Exception as e:
-            logger.error(f"Failed to process Spotify link {search_query}: {e}", exc_info=True)
-            await status_msg.edit(content="❌ An unknown error occurred while processing the Spotify link.")
+            await status_msg.edit(content=f"❌ An error occurred while processing the Spotify link: {e}")
+            return
+        
+        if not all_hits:
+            await status_msg.edit(content=f"❌ Could not find any YouTube matches for the tracks in the Spotify link.")
             return
 
-    # --- 2. TEXT & OTHER URL SEARCH HANDLING ---
-    else:
-        await status_msg.edit(content=f"⏳ Searching for `{search_query}` in the local library...")
-        search_terms = [re.sub(r'[^a-z0-9]', '', term) for term in search_query.lower().split()]
-        local_hits = []
-        if search_terms:
-            for song_path, metadata in MUSIC_METADATA_CACHE.items():
-                searchable_metadata = (
-                    re.sub(r'[^a-z0-9]', '', os.path.basename(song_path).lower()) +
-                    metadata.get('artist', '') + metadata.get('title', '') + metadata.get('album', '')
-                )
-                if all(term in searchable_metadata for term in search_terms):
-                    display_title = get_display_title_from_path(song_path)
-                    local_hits.append({'title': display_title, 'path': song_path, 'is_stream': False, 'ctx': ctx})
-        all_hits.extend(local_hits)
+        added_count, skipped_count, was_idle = 0, 0, False
+        async with state.music_lock:
+            existing_paths = {s.get('path') for s in (state.active_playlist + state.search_queue)}
+            if state.current_song: existing_paths.add(state.current_song.get('path'))
+            
+            new_songs_to_queue = []
+            for song in all_hits:
+                song_path = song.get('path')
+                if song_path and song_path not in existing_paths:
+                    new_songs_to_queue.append(song)
+                    existing_paths.add(song_path)
+                else:
+                    skipped_count += 1
+            
+            if new_songs_to_queue:
+                state.search_queue.extend(new_songs_to_queue)
+                added_count = len(new_songs_to_queue)
+                was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
+        
+        response_msg = f"✅ Added **{added_count}** songs to the queue from the Spotify link."
+        if skipped_count > 0:
+            response_msg += f" ({skipped_count} duplicates were skipped)."
+        await status_msg.edit(content=response_msg)
 
-        if not local_hits:
-            await status_msg.edit(content=f"⏳ No local results. Searching YouTube for `{search_query}`...")
+        if was_idle and added_count > 0:
+            await play_next_song()
+            
+        return
+
+    # --- 2. YOUTUBE / DIRECT URL HANDLING ---
+    elif is_generic_url:
+        await status_msg.edit(content=f"⏳ Processing URL: `{clean_query}`...")
+        try:
+            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                search_results = await asyncio.to_thread(ydl.extract_info, clean_query, download=False)
+                if search_results and 'entries' in search_results: # This handles playlists
+                    for entry in search_results['entries']:
+                        if entry and entry.get('url'):
+                            all_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True, 'ctx': ctx})
+                elif search_results and search_results.get('url'): # This handles single videos
+                    all_hits.append({'title': search_results.get('title', 'Unknown Title'), 'path': search_results.get('webpage_url', search_results.get('url')), 'is_stream': True, 'ctx': ctx})
+        except Exception as e:
+            logger.warning(f"Direct URL processing for '{clean_query}' failed with error: {e}. Falling back to text search.")
+
+    # --- 3. LOCAL & TEXT SEARCH (FALLBACK) ---
+    if not all_hits:
+        if not is_generic_url:
+            await status_msg.edit(content=f"⏳ Searching for `{clean_query}` in the local library...")
+            search_terms = [re.sub(r'[^a-z0-9]', '', term) for term in clean_query.lower().split()]
+            local_hits = []
+            if search_terms:
+                for song_path, metadata in MUSIC_METADATA_CACHE.items():
+                    searchable_metadata = (
+                        re.sub(r'[^a-z0-9]', '', os.path.basename(song_path).lower()) +
+                        metadata.get('artist', '') + metadata.get('title', '') + metadata.get('album', '')
+                    )
+                    if all(term in searchable_metadata for term in search_terms):
+                        display_title = get_display_title_from_path(song_path)
+                        local_hits.append({'title': display_title, 'path': song_path, 'is_stream': False, 'ctx': ctx})
+            all_hits.extend(local_hits)
+
+        if not all_hits:
+            await status_msg.edit(content=f"⏳ No local results. Searching YouTube for `{clean_query}`...")
             is_youtube_search = True
             try:
                 with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-                    # If the query is a URL, yt-dlp will handle it directly. If not, it will search.
-                    search_key = search_query if is_url_search else f"ytsearch10:{search_query}"
-                    search_results = await asyncio.to_thread(ydl.extract_info, search_key, download=False)
+                    search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{clean_query}", download=False)
                     if search_results and 'entries' in search_results:
                         for entry in search_results['entries']:
                             if entry and entry.get('url'):
-                                raw_title = entry.get('title', 'Unknown Title')
-                                artist = entry.get('artist') or entry.get('creator') or entry.get('uploader')
-                                display_title = f"{artist} - {raw_title}" if artist and artist not in raw_title else raw_title
-                                all_hits.append({'title': display_title,'path': entry.get('webpage_url', entry.get('url')),'is_stream': True,'ctx': ctx})
+                                all_hits.append({'title': entry.get('title', 'Unknown Title'),'path': entry.get('webpage_url', entry.get('url')),'is_stream': True,'ctx': ctx})
             except Exception as e:
                 await status_msg.edit(content=f"❌ An error occurred while searching YouTube: {e}")
-                logger.error(f"Youtube failed for query '{search_query}': {e}")
+                logger.error(f"Youtube search failed for query '{clean_query}': {e}")
                 return
 
-    # --- 3. DISPLAY RESULTS AND QUEUE LOGIC ---
+    # --- 4. DISPLAY RESULTS AND QUEUE LOGIC ---
     if not all_hits:
-        await status_msg.edit(content=f"❌ No songs found matching `{search_query}`.")
+        await status_msg.edit(content=f"❌ No songs found matching `{search_query}`.") # Show original query here for user clarity
         return
 
-    if len(all_hits) > 1 and is_url_search:
+    # --- Logic for URL Playlists (more than 1 song) ---
+    if is_generic_url and len(all_hits) > 1:
         added_count, skipped_count, was_idle = 0, 0, False
         async with state.music_lock:
             existing_paths = {s.get('path') for s in (state.active_playlist + state.search_queue)}
@@ -1876,19 +1932,39 @@ async def msearch(ctx, *, query: str):
                 added_count = len(new_songs_to_queue)
                 was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
         
-        response_msg = f"✅ Added **{added_count}** songs to the queue."
+        response_msg = f"✅ Added **{added_count}** songs to the queue from the playlist."
         if skipped_count > 0: response_msg += f" ({skipped_count} duplicates were skipped)."
         await ctx.send(response_msg)
-        try:
-            await status_msg.delete()
-        except discord.NotFound:
-            pass
+        try: await status_msg.delete()
+        except discord.NotFound: pass
 
         if was_idle and added_count > 0: await play_next_song()
         return
 
-    # If multiple songs were found from a TEXT search, show the selection menu
+    # --- [NEW] Logic for Single Song URLs ---
+    if is_generic_url and len(all_hits) == 1:
+        song_to_add = all_hits[0]
+        song_title = song_to_add.get('title', 'Unknown Title')
+
+        # Check for duplicates before adding
+        if await is_song_in_queue(state, song_to_add['path']):
+            await status_msg.edit(content=f"⚠️ **{song_title}** is already in the queue.")
+            return
+
+        was_idle = False
+        async with state.music_lock:
+            state.search_queue.append(song_to_add)
+            was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
+
+        await status_msg.edit(content=f"✅ Added **{song_title}** to the queue.")
+
+        if was_idle:
+            await play_next_song()
+
+        return # Exit the command here to prevent the menu from showing
+
     class SearchResultsView(discord.ui.View):
+        # ... (The SearchResultsView class remains exactly the same as in your original file)
         def __init__(self, hits: list, author: discord.Member, query: str, is_Youtube: bool, youtube_page: int = 1):
             super().__init__(timeout=180.0)
             self.hits, self.author, self.query, self.is_Youtube, self.youtube_page = hits, author, query, is_Youtube, youtube_page
@@ -2024,7 +2100,7 @@ async def msearch(ctx, *, query: str):
                 except discord.NotFound: pass
 
     view = SearchResultsView(all_hits, ctx.author, query=search_query, is_Youtube=is_youtube_search)
-    content_msg = f"Found {len(all_hits)} results from your search. Select a song to add:"
+    content_msg = f"Found {len(all_hits)} results. Select a song to add:"
     view.message = await status_msg.edit(content=content_msg, view=view)
     
 @bot.command(name='mclear')

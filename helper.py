@@ -152,9 +152,10 @@ class HelpView(View):
 
 # --- Interactive Queue Components ---
 class QueueDropdown(discord.ui.Select):
-    def __init__(self, bot, state, page_items):
+    def __init__(self, bot, state, page_items, author):
         self.bot = bot
         self.state = state
+        self.author = author
         
         options = [
             discord.SelectOption(label=f"{i + 1}. {song_info.get('title', 'Unknown Title')}"[:100], value=str(i))
@@ -164,9 +165,9 @@ class QueueDropdown(discord.ui.Select):
         super().__init__(placeholder="Select a song to jump to...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        # Check if the user has permission to interact
-        if not (interaction.user.id in self.state.config.ALLOWED_USERS or (interaction.user.voice and interaction.user.voice.channel and interaction.user.voice.self_video)):
-            await interaction.response.send_message("You must be in the Streaming VC with camera on to use this.", ephemeral=True)
+        # Check if the interacting user is the one who initiated the command.
+        if interaction.user != self.author:
+            await interaction.response.send_message("You can't control this menu.", ephemeral=True)
             return
             
         selected_index = int(self.values[0])
@@ -239,7 +240,7 @@ class QueueView(discord.ui.View):
         page_items = self.full_queue[start_index:end_index]
         
         if page_items:
-            self.add_item(QueueDropdown(self.bot, self.state, page_items))
+            self.add_item(QueueDropdown(self.bot, self.state, page_items, self.author))
         
         if self.total_pages > 1:
             self.add_item(self.create_nav_button("⬅️ Prev", "prev_page", self.current_page == 0))
@@ -1573,7 +1574,7 @@ class BotHelper:
                 user_obj = fetched_user
         except Exception:
             pass 
-
+        
         embed = discord.Embed(description=f"{member.mention}", color=discord.Color.blue())
 
         # It checks if the discriminator is '0' and formats the name accordingly.

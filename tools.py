@@ -238,6 +238,7 @@ class BotConfig:
     MUSIC_MAX_VOLUME: float
     MUSIC_SUPPORTED_FORMATS: Tuple[str, ...]
     MUSIC_DEFAULT_ANNOUNCE_SONGS: bool
+    NORMALIZE_LOCAL_MUSIC: bool
     ENABLE_GLOBAL_MSKIP: bool
     GLOBAL_HOTKEY_MSKIP: str
     ENABLE_GLOBAL_MPAUSE: bool
@@ -300,6 +301,7 @@ class BotConfig:
             MUSIC_MAX_VOLUME=getattr(config_module, 'MUSIC_MAX_VOLUME', 1.0),
             MUSIC_SUPPORTED_FORMATS=getattr(config_module, 'MUSIC_SUPPORTED_FORMATS', ('.mp3', '.flac', '.wav', '.ogg', '.m4a')),
             MUSIC_DEFAULT_ANNOUNCE_SONGS=getattr(config_module, 'MUSIC_DEFAULT_ANNOUNCE_SONGS', False),
+            NORMALIZE_LOCAL_MUSIC=getattr(config_module, 'NORMALIZE_LOCAL_MUSIC', True),
             ENABLE_GLOBAL_MSKIP=getattr(config_module, 'ENABLE_GLOBAL_MSKIP', False),
             GLOBAL_HOTKEY_MSKIP=getattr(config_module, 'GLOBAL_HOTKEY_MSKIP', 'grave'),
             ENABLE_GLOBAL_MPAUSE=getattr(config_module, 'ENABLE_GLOBAL_MPAUSE', False),
