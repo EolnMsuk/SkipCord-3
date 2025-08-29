@@ -143,6 +143,7 @@ class HelpView(View):
         super().__init__(timeout=None)
         # Define buttons with their emoji, label, command, and desired color style
         cmds = [
+            ("⏸️", "👤", "!refresh", discord.ButtonStyle.danger), 
             ("⏭️", "👤", "!skip", discord.ButtonStyle.success), 
             ("ℹ️", "👤", "!info", discord.ButtonStyle.primary), 
             ("⏱️", "👤", "!times", discord.ButtonStyle.secondary) 
@@ -745,6 +746,7 @@ class BotHelper:
         """Sends the main interactive help menu embed with buttons."""
         try:
             help_description = """
+**Pause** ---------- Pauses Omegle
 **Skip** ----------- Skip/Start Omegle
 **Info** ----------- Server Info/Rules
 **Top 10** -------- Top 10 VC Times
@@ -1745,4 +1747,5 @@ class BotHelper:
         
         view = QueueView(self.bot, self.state, ctx.author)
         await view.start()
+
         view.message = await ctx.send(content="**Current Queue:** (Select a song to jump to it)", view=view)
