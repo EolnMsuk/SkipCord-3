@@ -542,8 +542,8 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
         logger.debug("Audio source created successfully. Attempting to play.")
         bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_song(e), bot.loop))
         
-        async with state.music_lock:
-            state.is_processing_song = False
+                                    
+                                            
 
         logger.info(f"Now playing: {song_display_name}")
         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=song_display_name))
@@ -613,10 +613,15 @@ async def play_next_song(error=None, is_recursive_call=False):
     if error:
         logger.error(f"Error in music player callback: {error}")
 
+    # FIX 1: A song has finished. We are no longer processing the *previous* song.
+    async with state.music_lock:
+        state.is_processing_song = False
+
     song_to_play_info = None
     ctx_for_playback = None
     needs_library_scan = False
 
+    # Check for intentional stop first
     async with state.music_lock:
         if getattr(state, 'stop_after_clear', False):
             state.stop_after_clear = False
@@ -627,12 +632,16 @@ async def play_next_song(error=None, is_recursive_call=False):
             await bot.change_presence(activity=None)
             return
 
-        if not await ensure_voice_connection():
-            logger.critical("Music playback stopped: Could not establish a voice connection.")
+    # FIX 2: Ensure connection is solid *before* grabbing a song from the queue.
+    if not await ensure_voice_connection():
+        logger.critical("Music playback stopped: Could not establish a voice connection.")
+        async with state.music_lock: # Need a lock just to update state safely
             state.is_music_playing = False
             state.current_song = None
-            return
+        return
 
+    # Lock to safely read and modify the queue state
+    async with state.music_lock:
         # NEW PRIORITY-BASED SONG SELECTION
         if state.music_mode == 'loop' and state.current_song:
             song_to_play_info = state.current_song
@@ -666,6 +675,7 @@ async def play_next_song(error=None, is_recursive_call=False):
                     song_to_play_info = {'path': song_path, 'title': display_title, 'is_stream': False}
                     logger.info(f"Playing next from local library (Alphabetical): {display_title}")
 
+    # Handle library scan outside the lock
     if needs_library_scan:
         if is_recursive_call:
             logger.error("Recursive call to play_next_song detected after a failed library scan. Halting to prevent infinite loop.")
@@ -675,22 +685,29 @@ async def play_next_song(error=None, is_recursive_call=False):
         await play_next_song(is_recursive_call=True)
         return
 
-    async with state.music_lock:
-        if song_to_play_info:
-            ctx_for_playback = song_to_play_info.get('ctx')
+    if song_to_play_info:
+                             
+        ctx_for_playback = song_to_play_info.get('ctx')
+        # Update state for the new song
+        async with state.music_lock:
             state.is_music_playing = True
             state.is_music_paused = False
             state.current_song = song_to_play_info
-        else:
+        
+        # Now call the player
+        await _play_song(song_to_play_info, ctx=ctx_for_playback)
+    else:
+        # No song found, update state to idle and stop
+        async with state.music_lock:
             state.is_music_playing = False
             state.is_music_paused = False
             state.current_song = None
-            logger.warning("Music playback finished. All queues and local library are empty.")
-            await bot.change_presence(activity=None)
-            return
+        logger.warning("Music playback finished. All queues and local library are empty.")
+        await bot.change_presence(activity=None)
+        return
 
-    if song_to_play_info:
-        await _play_song(song_to_play_info, ctx=ctx_for_playback)
+                         
+                                                                 
 
 
 #########################################
