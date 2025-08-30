@@ -23,7 +23,7 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 
 ### 🎵 Integrated Music System
 
-  * **Versatile Playback**: Play songs or playlists from **YouTube** or **Spotify** and local files. Spotify integration allows for adding single tracks, albums, or entire playlists to the queue.
+  * **Versatile Playback**: Search or play songs or playlists from **YouTube** or **Spotify** or local files. Spotify integration allows for adding single tracks, albums, or entire playlists to the queue.
   * **Interactive Queue**: View the song queue with `!q` and instantly jump to any song using a dropdown menu.
   * **Persistent Playlists**: Save the current queue as a named playlist, then load, list, or delete playlists at any time.
   * **Multiple Playback Modes**: Effortlessly cycle between **Shuffle**, **Alphabetical**, and **Loop** modes.
