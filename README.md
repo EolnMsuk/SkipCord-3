@@ -213,7 +213,7 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
 
 -----
 
-## 🚀 Running the Bot
+## Running the Bot
 
 1.  **Important**: Close all running instances of the Microsoft Edge browser.
 2.  Open your command prompt, navigate to the bot's folder (`cd path/to/your/bot`), and run the bot:
