@@ -84,7 +84,6 @@ The bot keeps administrators informed with a robust, event-driven notification s
 *(No channel or VC restrictions)*
 
   * `!purge <count>`: Deletes a specified number of messages.
-  * `!shutdown`: Safely shuts down the bot.
   * `!hush`: Server-mutes all non-admin users.
   * `!rhush` / `!removehush`: Removes server-mutes.
   * `!secret`: Server-mutes and deafens all non-admin users.
@@ -104,6 +103,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
   * `!join`: DMs a join invite to all users with an admin role.
   * `!clearstats`: Clears all statistical data.
   * `!clearwhois`: Clears all historical event data.
+  * `!shutdown`: Safely shuts down the bot.
 
 -----
 
