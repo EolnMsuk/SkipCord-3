@@ -222,7 +222,7 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
     ```
 3.  The bot will launch Edge, navigate to your configured URL, and initialize all systems.
 
-### 🔧 Troubleshooting
+### Troubleshooting
 
   * **Token Error**: Ensure your `.env` file is correctly named (it must be `.env`, not `env.txt`), is in the same folder as `bot.py`, and contains the correct Discord bot token.
   * **Edge Won't Launch**: Double-check that the `EDGE_USER_DATA_DIR` path in `config.py` is absolutely correct and matches your system.
