@@ -144,8 +144,6 @@ To enable playing songs, albums, and playlists from Spotify links, you need API 
 
 1.  Create a folder for your bot and place all the provided Python files (`bot.py`, `helper.py`, `omegle.py`, `tools.py`) inside.
 
-2.  Create a new file named `.env` in the same folder.
-
 3.  Open the `.env` file and add your credentials in the following format. Replace the placeholder text with the actual values you copied.
 
     ```env
