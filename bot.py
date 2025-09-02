@@ -542,9 +542,6 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
         logger.debug("Audio source created successfully. Attempting to play.")
         bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_song(e), bot.loop))
         
-                                    
-                                            
-
         logger.info(f"Now playing: {song_display_name}")
         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=song_display_name))
 
@@ -686,7 +683,6 @@ async def play_next_song(error=None, is_recursive_call=False):
         return
 
     if song_to_play_info:
-                             
         ctx_for_playback = song_to_play_info.get('ctx')
         # Update state for the new song
         async with state.music_lock:
@@ -705,10 +701,6 @@ async def play_next_song(error=None, is_recursive_call=False):
         logger.warning("Music playback finished. All queues and local library are empty.")
         await bot.change_presence(activity=None)
         return
-
-                         
-                                                                 
-
 
 #########################################
 # Decorators
@@ -920,7 +912,8 @@ async def _soundboard_grace_protocol(member: discord.Member, config: BotConfig):
     
     member_after_sleep = guild.get_member(member.id)
     
-    is_in_moderated_vc = lambda ch: ch and ch.id in (config.STREAMING_VC_ID, config.ALT_VC_ID)
+    moderated_vc_ids = {config.STREAMING_VC_ID, *config.ALT_VC_ID}
+    is_in_moderated_vc = lambda ch: ch and ch.id in moderated_vc_ids
 
     if (member_after_sleep and member_after_sleep.voice and
             member_after_sleep.voice.channel and is_in_moderated_vc(member_after_sleep.voice.channel)
@@ -1100,7 +1093,10 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if member.id == bot.user.id or member.bot:
         return
 
-    is_in_moderated_vc = lambda ch: ch and ch.id in (bot_config.STREAMING_VC_ID, bot_config.ALT_VC_ID)
+    # Create a set of all moderated VCs for efficient lookups
+    moderated_vc_ids = {bot_config.STREAMING_VC_ID, *bot_config.ALT_VC_ID}
+    is_in_moderated_vc = lambda ch: ch and ch.id in moderated_vc_ids
+
     was_in_mod_vc = is_in_moderated_vc(before.channel)
     is_now_in_mod_vc = is_in_moderated_vc(after.channel)
 
@@ -1393,10 +1389,11 @@ async def daily_auto_stats_clear() -> None:
     if report_sent_successfully:
         try:
             streaming_vc = channel.guild.get_channel(bot_config.STREAMING_VC_ID)
-            alt_vc = channel.guild.get_channel(bot_config.ALT_VC_ID) if bot_config.ALT_VC_ID else None
             current_members = []
             if streaming_vc: current_members.extend([m for m in streaming_vc.members if not m.bot])
-            if alt_vc: current_members.extend([m for m in alt_vc.members if not m.bot])
+            for vc_id in bot_config.ALT_VC_ID:
+                if alt_vc := channel.guild.get_channel(vc_id):
+                    current_members.extend([m for m in alt_vc.members if not m.bot])
 
             async with state.vc_lock, state.analytics_lock, state.moderation_lock:
                 state.vc_time_data = {}
@@ -1436,9 +1433,10 @@ async def timeout_unauthorized_users_task() -> None:
     moderated_vcs = []
     if streaming_vc := guild.get_channel(bot_config.STREAMING_VC_ID):
         moderated_vcs.append(streaming_vc)
-    if bot_config.ALT_VC_ID and (alt_vc := guild.get_channel(bot_config.ALT_VC_ID)):
-        if alt_vc not in moderated_vcs:
-            moderated_vcs.append(alt_vc)
+    for vc_id in bot_config.ALT_VC_ID:
+        if alt_vc := guild.get_channel(vc_id):
+            if alt_vc not in moderated_vcs:
+                moderated_vcs.append(alt_vc)
 
     if not moderated_vcs:
         logger.warning("No valid moderated VCs found.")

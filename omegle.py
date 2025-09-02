@@ -272,24 +272,51 @@ class OmegleHandler:
     @require_healthy_driver
     async def refresh(self, ctx: Optional[Union[commands.Context, discord.Message, discord.Interaction]] = None) -> bool:
         """
-        Refreshes the stream page by navigating the browser back to the configured video URL.
-        This is often used to fix a disconnected or frozen stream.
+        Executes a "refresh" action by sending the Escape key 4 times in rapid succession.
+        This can be used to exit menus or reset the state on the target page.
         
         Returns:
             True if successful, False otherwise.
         """
-        try:
-            # `driver.get()` is a blocking call.
-            await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
-            logger.info("Selenium: Navigated to OMEGLE_VIDEO_URL for refresh command.")
-            return True
-        except Exception as e:
-            logger.error(f"Selenium refresh failed: {e}")
-            if ctx:
-                error_msg = "Failed to process refresh command in browser."
-                if isinstance(ctx, discord.Interaction):
-                    if ctx.response.is_done(): await ctx.followup.send(error_msg)
-                    else: await ctx.response.send_message(error_msg)
-                elif hasattr(ctx, 'send'):
-                    await ctx.send(error_msg)
-            return False
+        for attempt in range(3): # Add retry loop for robustness
+            try:
+                # Loop 4 times to send the Escape key press.
+                for i in range(4):
+                    script = f"""
+                    var evt = new KeyboardEvent('keydown', {{
+                        bubbles: true, cancelable: true, key: 'Escape', code: 'Escape'
+                    }});
+                    document.dispatchEvent(evt);
+                    """
+                    # Execute the JavaScript in a separate thread.
+                    await asyncio.to_thread(self.driver.execute_script, script)
+                    logger.info(f"Selenium: Sent Escape key event to page (press {i+1}/4).")
+                    if i < 3: # Only sleep between presses
+                        await asyncio.sleep(0.1) # Short delay for rapid succession.
+                
+                logger.info("Selenium: Successfully sent 4 escape key presses for refresh command.")
+                return True # Success
+            except StaleElementReferenceException:
+                logger.warning(f"StaleElementReferenceException on refresh attempt {attempt + 1}. Retrying...")
+                await asyncio.sleep(0.5)
+                continue # Retry the operation.
+            except Exception as e:
+                logger.error(f"Selenium refresh (escape key press) failed: {e}")
+                if ctx:
+                    error_msg = "Failed to process refresh command in browser."
+                    if isinstance(ctx, discord.Interaction):
+                        if ctx.response.is_done(): await ctx.followup.send(error_msg)
+                        else: await ctx.response.send_message(error_msg)
+                    elif hasattr(ctx, 'send'):
+                        await ctx.send(error_msg)
+                return False
+        
+        logger.error("Failed to execute refresh after multiple retries due to stale elements.")
+        if ctx:
+            error_msg = "Failed to execute refresh command after multiple retries."
+            if isinstance(ctx, discord.Interaction):
+                if ctx.response.is_done(): await ctx.followup.send(error_msg)
+                else: await ctx.response.send_message(error_msg)
+            elif hasattr(ctx, 'send'):
+                await ctx.send(error_msg)
+        return False

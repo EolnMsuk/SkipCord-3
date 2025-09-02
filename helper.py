@@ -746,7 +746,7 @@ class BotHelper:
         """Sends the main interactive help menu embed with buttons."""
         try:
             help_description = """
-**Pause** ---------- Pauses Omegle
+**Pause** --------- Pause Omegle
 **Skip** ----------- Skip/Start Omegle
 **Info** ----------- Server Info/Rules
 **Top 10** -------- Top 10 VC Times
@@ -998,10 +998,27 @@ class BotHelper:
 
         # --- Helper Functions ---
         def get_clean_mention(identifier):
-            if identifier is None: return "Unknown"
+            if identifier is None:
+                return "Unknown"
+            
+            # --- BLOCK 1: Handle integer IDs ---
+            # This is the preferred method as IDs are unique.
             if isinstance(identifier, int):
-                if member := ctx.guild.get_member(identifier): return member.mention
-            if member := discord.utils.find(lambda m: m.name == str(identifier) or m.display_name == str(identifier), ctx.guild.members): return member.mention
+                # First, try the server's cache. It's the fastest method.
+                if member := ctx.guild.get_member(identifier):
+                    return member.mention
+                # If the user is not in the cache (e.g., they left the server),
+                # we can still create a valid mention using their ID. This is 100% accurate.
+                return f"<@{identifier}>"
+
+            # --- BLOCK 2: Handle string identifiers ---
+            # This is a fallback for older data where an ID might not have been stored.
+            if isinstance(identifier, str):
+                # Use the less reliable name search only as a last resort.
+                if member := discord.utils.find(lambda m: m.name == identifier or m.display_name == identifier, ctx.guild.members):
+                    return member.mention
+
+            # If the identifier is not an int or a resolvable string, just return it.
             return str(identifier)
 
         def get_user_display_info(user_id, stored_username=None, stored_display_name=None):
@@ -1168,10 +1185,27 @@ class BotHelper:
         reports, has_data = {}, False
 
         def get_clean_mention(identifier):
-            if identifier is None: return "Unknown"
+            if identifier is None:
+                return "Unknown"
+            
+            # --- BLOCK 1: Handle integer IDs ---
+            # This is the preferred method as IDs are unique.
             if isinstance(identifier, int):
-                if member := ctx.guild.get_member(identifier): return member.mention
-            if member := discord.utils.find(lambda m: m.name == str(identifier) or m.display_name == str(identifier), ctx.guild.members): return member.mention
+                # First, try the server's cache. It's the fastest method.
+                if member := ctx.guild.get_member(identifier):
+                    return member.mention
+                # If the user is not in the cache (e.g., they left the server),
+                # we can still create a valid mention using their ID. This is 100% accurate.
+                return f"<@{identifier}>"
+
+            # --- BLOCK 2: Handle string identifiers ---
+            # This is a fallback for older data where an ID might not have been stored.
+            if isinstance(identifier, str):
+                # Use the less reliable name search only as a last resort.
+                if member := discord.utils.find(lambda m: m.name == identifier or m.display_name == identifier, ctx.guild.members):
+                    return member.mention
+
+            # If the identifier is not an int or a resolvable string, just return it.
             return str(identifier)
 
         # --- 1. Currently Timed Out Users ---
@@ -1747,5 +1781,4 @@ class BotHelper:
         
         view = QueueView(self.bot, self.state, ctx.author)
         await view.start()
-
         view.message = await ctx.send(content="**Current Queue:** (Select a song to jump to it)", view=view)

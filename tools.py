@@ -210,7 +210,7 @@ class BotConfig:
     EDGE_USER_DATA_DIR: str
 
     # Optional Settings (with defaults)
-    ALT_VC_ID: Optional[int]
+    ALT_VC_ID: List[int]
     ALLOWED_USERS: Set[int]
     ADMIN_ROLE_NAME: List[str]
     JOIN_INVITE_MESSAGE: str
@@ -273,7 +273,7 @@ class BotConfig:
             EDGE_USER_DATA_DIR=getattr(config_module, 'EDGE_USER_DATA_DIR', None),
 
             # --- Optional Settings (with defaults) ---
-            ALT_VC_ID=getattr(config_module, 'ALT_VC_ID', None),
+            ALT_VC_ID=getattr(config_module, 'ALT_VC_ID', []),
             ALLOWED_USERS=getattr(config_module, 'ALLOWED_USERS', set()),
             ADMIN_ROLE_NAME=getattr(config_module, 'ADMIN_ROLE_NAME', []),
             JOIN_INVITE_MESSAGE=getattr(config_module, 'JOIN_INVITE_MESSAGE', ""),
