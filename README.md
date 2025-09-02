@@ -29,6 +29,8 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
   * **Multiple Playback Modes**: Effortlessly cycle between **Shuffle**, **Alphabetical**, and **Loop** modes.
   * **Automatic Management**: The bot joins the VC when users with cameras are present and leaves when it's empty to conserve resources.
 
+<img width="425" height="483" alt="panel" src="https://github.com/user-attachments/assets/c1923288-e00a-4e5a-a71c-d11657b261e5" />
+
 ### 📊 Persistent State & Analytics
 
   * **State Persistence**: All critical data—stats, violations, timeouts, event history, and playlists—is saved to `data.json` and reloaded on startup, ensuring no data is lost after a crash or restart.
