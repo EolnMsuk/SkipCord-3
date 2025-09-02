@@ -23,6 +23,8 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
   * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
   * **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`.
 
+<img width="1271" height="538" alt="console" src="https://github.com/user-attachments/assets/58125182-849d-4392-ae15-e561b5f4e8fa" />
+
 ### 🎵 Integrated Music System
 
   * **Versatile Playback**: Search / play songs or playlists from **YouTube** / **Spotify** / local files.
@@ -37,6 +39,8 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 
   * **State Persistence**: All critical data—stats, violations, timeouts, event history, and playlists—is saved to `data.json` and reloaded on startup, ensuring no data is lost after a crash or restart.
   * **VC Time Tracking**: Tracks the cumulative time users spend in moderated voice channels, with daily leaderboards available via the `!times` command.
+
+<img width="376" height="322" alt="times" src="https://github.com/user-attachments/assets/4592939a-167f-4dcd-b6d4-c5d8b9ac0aa3" />
 
 ### 🔔 Comprehensive Event Notifications
 
