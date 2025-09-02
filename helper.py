@@ -983,18 +983,41 @@ class BotHelper:
             role_change_list = [e for e in self.state.recent_role_changes if e[4] >= time_filter]
 
 
+        # Inside show_whois()
+
         # --- User Info Mapping ---
         user_ids_to_map = {entry[0] for data_list in [untimeout_list, kick_list, ban_list, unban_list, join_list, leave_list, role_change_list] for entry in data_list}
         user_map = {}
         if user_ids_to_map:
-            cached_ids = set()
+            # First, efficiently populate the map with users already in the server cache.
+            ids_to_fetch = set()
             for user_id in user_ids_to_map:
                 if member := ctx.guild.get_member(user_id):
                     user_map[user_id] = member
-                    cached_ids.add(user_id)
-            for user_id in (user_ids_to_map - cached_ids):
-                try: user_map[user_id] = await self.bot.fetch_user(user_id)
-                except discord.NotFound: user_map[user_id] = None
+                else:
+                    # Collect all IDs that need to be fetched via the API.
+                    ids_to_fetch.add(user_id)
+            
+            # Concurrently fetch all users who were not in the cache.
+            if ids_to_fetch:
+                # This helper coroutine fetches a user and handles potential errors.
+                async def fetch_user(uid):
+                    try:
+                        return uid, await self.bot.fetch_user(uid)
+                    except discord.NotFound:
+                        return uid, None # User doesn't exist.
+                    except Exception as e:
+                        logger.warning(f"Could not fetch user {uid} for whois report: {e}")
+                        return uid, None # Other potential error.
+
+                # Create a list of tasks to run in parallel.
+                fetch_tasks = [fetch_user(uid) for uid in ids_to_fetch]
+                # asyncio.gather runs all fetch tasks at once and waits for them to complete.
+                results = await asyncio.gather(*fetch_tasks)
+                
+                # Populate the user_map with the results from the concurrent fetches.
+                for uid, user_obj in results:
+                    user_map[uid] = user_obj
 
         # --- Helper Functions ---
         def get_clean_mention(identifier):
