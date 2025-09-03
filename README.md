@@ -234,10 +234,11 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
 
 1.  **Important**: Close all running instances of the Microsoft Edge browser.
 2.  Open your command prompt, navigate to the bot's folder (`cd path/to/your/bot`), and run the bot:
+
     ```
     python bot.py
     ```
-3.  The bot will launch Edge, navigate to your configured URL, and initialize all systems.
+4.  The bot will launch Edge, navigate to your configured URL, and initialize all systems.
 
 ### Troubleshooting
 
