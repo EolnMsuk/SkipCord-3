@@ -926,6 +926,35 @@ async def _soundboard_grace_protocol(member: discord.Member, config: BotConfig):
         except Exception as e:
             logger.error(f"Failed to re-mute {member_after_sleep.name} after grace period: {e}")
 
+async def manage_menu_task_presence():
+    """
+    Starts or stops the periodic menu update task based on user activity in the streaming VC.
+    This is only active if EMPTY_VC_PAUSE is True.
+    """
+    if not bot_config.EMPTY_VC_PAUSE or not state.omegle_enabled:
+        return
+
+    await asyncio.sleep(1.5) # Give voice state a moment to settle
+    
+    guild = bot.get_guild(bot_config.GUILD_ID)
+    if not guild: return
+    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
+    if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel): return
+
+    human_listeners_with_cam = [
+        m for m in streaming_vc.members 
+        if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice and m.voice.self_video
+    ]
+    
+    is_running = periodic_menu_update.is_running()
+
+    if human_listeners_with_cam and not is_running:
+        logger.info("Active user with camera detected. Starting periodic menu task.")
+        periodic_menu_update.start()
+    elif not human_listeners_with_cam and is_running:
+        logger.info("VC is empty of active users. Stopping periodic menu task.")
+        periodic_menu_update.stop()
+
 #########################################
 # Bot Event Handlers
 #########################################
@@ -985,8 +1014,11 @@ async def on_ready() -> None:
             daily_auto_stats_clear.start()
             logger.info("Daily auto-stats task started.")
 
-        if not await omegle_handler.initialize():
-            logger.critical("Selenium initialization failed.")
+        if state.omegle_enabled:
+            if not await omegle_handler.initialize():
+                logger.critical("Selenium initialization failed.")
+        else:
+            logger.warning("Omegle is disabled on startup. Skipping browser initialization.")
 
         if state.music_enabled:
             logger.info("Music is enabled on startup. Initializing music player...")
@@ -1021,6 +1053,8 @@ async def on_ready() -> None:
         await register_hotkey(bot_config.ENABLE_GLOBAL_MPAUSE, bot_config.GLOBAL_HOTKEY_MPAUSE, global_mpause, "mpause")
         await register_hotkey(bot_config.ENABLE_GLOBAL_MVOLUP, bot_config.GLOBAL_HOTKEY_MVOLUP, global_mvolup, "mvolup")
         await register_hotkey(bot_config.ENABLE_GLOBAL_MVOLDOWN, bot_config.GLOBAL_HOTKEY_MVOLDOWN, global_mvoldown, "mvoldown")
+
+        asyncio.create_task(manage_menu_task_presence())
 
         logger.info("Initialization complete")
 
@@ -1206,6 +1240,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     if is_event_in_streaming_vc:
         asyncio.create_task(manage_music_presence())
+        asyncio.create_task(manage_menu_task_presence())
 
 
 @bot.event
@@ -1336,7 +1371,8 @@ async def periodic_menu_update() -> None:
             await helper.send_music_menu(channel)
             await asyncio.sleep(1)
 
-        await helper.send_help_menu(channel)
+        if state.omegle_enabled:
+            await helper.send_help_menu(channel)
 
     except Exception as e:
         logger.error(f"Periodic menu update task failed: {e}", exc_info=True)
@@ -1569,6 +1605,9 @@ async def help_command(ctx):
 @omegle_command_cooldown
 @handle_errors
 async def skip(ctx):
+    if not state.omegle_enabled:
+        await ctx.send("Omegle features are currently disabled. Use `!enableomegle` to start.", delete_after=10)
+        return
     command_name = f"!{ctx.invoked_with}"
     record_command_usage(state.analytics, command_name)
     record_command_usage_by_user(state.analytics, ctx.author.id, command_name)
@@ -1579,6 +1618,9 @@ async def skip(ctx):
 @omegle_command_cooldown
 @handle_errors
 async def refresh(ctx):
+    if not state.omegle_enabled:
+        await ctx.send("Omegle features are currently disabled. Use `!enableomegle` to start.", delete_after=10)
+        return
     command_name = f"!{ctx.invoked_with}"
     record_command_usage(state.analytics, command_name)
     record_command_usage_by_user(state.analytics, ctx.author.id, command_name)
@@ -1631,6 +1673,45 @@ async def shutdown(ctx) -> None:
 
     await _initiate_shutdown(ctx)
 
+@bot.command(name='disableomegle')
+@require_allowed_user()
+@handle_errors
+async def disable_omegle(ctx):
+    """Disables Omegle functionality and closes the browser."""
+    if not state.omegle_enabled:
+        await ctx.send("❌ Omegle features are already disabled.", delete_after=10)
+        return
+
+    state.omegle_enabled = False
+    await omegle_handler.close()
+    if periodic_menu_update.is_running():
+        periodic_menu_update.stop()
+    
+    logger.warning(f"Omegle features DISABLED by {ctx.author.name}")
+    await ctx.send("✅ Omegle features have been **DISABLED**. The browser has been closed and menus will stop.")
+
+@bot.command(name='enableomegle')
+@require_allowed_user()
+@handle_errors
+async def enable_omegle(ctx):
+    """Enables Omegle functionality and launches the browser."""
+    if state.omegle_enabled:
+        await ctx.send("✅ Omegle features are already enabled.", delete_after=10)
+        return
+
+    state.omegle_enabled = True
+    await ctx.send("⏳ Enabling Omegle features. Launching browser...")
+    if not await omegle_handler.initialize():
+        await ctx.send("❌ **Critical Error:** Failed to launch the browser. Please check the logs.")
+        state.omegle_enabled = False # Revert state on failure
+        return
+
+    if not periodic_menu_update.is_running():
+        periodic_menu_update.start()
+    
+    logger.warning(f"Omegle features ENABLED by {ctx.author.name}")
+    await ctx.send("✅ Omegle features have been **ENABLED**. The browser is running and menus will resume.")
+    
 #########################################
 # Music Commands
 #########################################
