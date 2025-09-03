@@ -397,6 +397,7 @@ class BotState:
     recent_untimeouts: UntimeoutHistory = field(default_factory=list)
     recent_role_changes: RoleChangeHistory = field(default_factory=list)
     omegle_disabled_users: Set[int] = field(default_factory=set)
+    omegle_enabled: bool = True
     analytics: AnalyticsData = field(default_factory=lambda: {"command_usage": {}, "command_usage_by_user": {}, "violation_events": 0})
     recently_logged_commands: Set[str] = field(default_factory=set)
     last_auto_pause_time: float = 0.0
@@ -462,6 +463,7 @@ class BotState:
         # Return a dictionary with all the state data converted to JSON-friendly types.
         return {
             "analytics": self.analytics,
+            "omegle_enabled": self.omegle_enabled,
             "users_received_rules": list(self.users_received_rules),
             "user_violations": self.user_violations,
             "active_timeouts": self.active_timeouts,
@@ -533,6 +535,7 @@ class BotState:
         state.users_received_rules = set(data.get("users_received_rules", []))
         state.users_with_dms_disabled = set(data.get("users_with_dms_disabled", []))
         state.omegle_disabled_users = set(data.get("omegle_disabled_users", []))
+        state.omegle_enabled = data.get("omegle_enabled", True)
 
         state.recent_joins = [(e["id"], e["name"], e["display_name"], datetime.fromisoformat(e["timestamp"])) for e in data.get("recent_joins", [])]
         state.recent_leaves = [(e["id"], e["name"], e["display_name"], datetime.fromisoformat(e["timestamp"]), e["roles"]) for e in data.get("recent_leaves", [])]
