@@ -1684,11 +1684,9 @@ async def disable_omegle(ctx):
 
     state.omegle_enabled = False
     await omegle_handler.close()
-    if periodic_menu_update.is_running():
-        periodic_menu_update.stop()
     
     logger.warning(f"Omegle features DISABLED by {ctx.author.name}")
-    await ctx.send("✅ Omegle features have been **DISABLED**. The browser has been closed and menus will stop.")
+    await ctx.send("✅ Omegle features have been **DISABLED**. The browser is closed and the Omegle help menu will no longer be posted.")
 
 @bot.command(name='enableomegle')
 @require_allowed_user()
@@ -1705,13 +1703,10 @@ async def enable_omegle(ctx):
         await ctx.send("❌ **Critical Error:** Failed to launch the browser. Please check the logs.")
         state.omegle_enabled = False # Revert state on failure
         return
-
-    if not periodic_menu_update.is_running():
-        periodic_menu_update.start()
     
     logger.warning(f"Omegle features ENABLED by {ctx.author.name}")
-    await ctx.send("✅ Omegle features have been **ENABLED**. The browser is running and menus will resume.")
-    
+    await ctx.send("✅ Omegle features have been **ENABLED**. The browser is running and the Omegle help menu will now be posted periodically.")
+
 #########################################
 # Music Commands
 #########################################
