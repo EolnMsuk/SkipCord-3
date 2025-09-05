@@ -234,7 +234,7 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
     ```
     python bot.py
     ```
-4.  The bot will launch Edge, navigate to your configured URL, and initialize all systems.
+4.  The bot should now Automatically launch Edge, navigate to your configured URL, and initialize all systems.
 
 ### Troubleshooting
 
