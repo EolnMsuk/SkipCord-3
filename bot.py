@@ -834,6 +834,7 @@ async def _handle_stream_vc_join(member: discord.Member):
             state.failed_dm_users.add(member.id)
         logger.error(f"Generic error sending DM to {member.name}: {e}", exc_info=True)
 
+
 async def _join_camera_failsafe_check(member: discord.Member, config: BotConfig):
     """
     After a user joins, waits 5 seconds and checks if their camera is on.
@@ -1052,7 +1053,7 @@ async def on_member_unban(guild: discord.Guild, user: discord.User) -> None:
 async def on_member_remove(member: discord.Member) -> None:
     await helper.handle_member_remove(member)
 
-async def manage_music_presence():
+async def manage_music_presence(before_cam_users: int, after_cam_users: int):
     """
     Manages the music bot's presence based on user activity in the streaming VC.
     It joins and plays when users are present, and leaves when they are not.
@@ -1060,32 +1061,27 @@ async def manage_music_presence():
     if not state.music_enabled:
         return
     
-    await asyncio.sleep(1.5) 
-    
-    guild = bot.get_guild(bot_config.GUILD_ID)
-    if not guild: return
-    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
-    if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel): return
-
-    human_listeners_with_cam = [m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice and m.voice.self_video]
-    is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
-
     # --- AUTO-LEAVE LOGIC ---
-    if is_bot_connected and not human_listeners_with_cam:
-        logger.info("No active users with cameras detected. Disconnecting music bot.")
-        await bot.voice_client_music.disconnect()
-        bot.voice_client_music = None
-        async with state.music_lock:
-            state.is_music_playing = False
-            state.is_music_paused = False
-            state.current_song = None # Clear current song when leaving
-        await bot.change_presence(activity=None)
-        return
+    # This triggers if the number of users with cameras drops to zero.
+    if after_cam_users == 0 and before_cam_users > 0:
+        if bot.voice_client_music and bot.voice_client_music.is_connected():
+            logger.info("No active users with cameras detected. Disconnecting music bot.")
+            await bot.voice_client_music.disconnect()
+            bot.voice_client_music = None
+            async with state.music_lock:
+                state.is_music_playing = False
+                state.is_music_paused = False
+                state.current_song = None
+            await bot.change_presence(activity=None)
+            return
 
     # --- REJOINING LOGIC ---
-    if not is_bot_connected and human_listeners_with_cam:
-        logger.info("Active user with camera detected and bot is not in VC. Triggering music start.")
-        asyncio.create_task(start_music_playback())
+    # This triggers if the number of users with cameras goes from zero to one or more.
+    if after_cam_users > 0 and before_cam_users == 0:
+        is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
+        if not is_bot_connected:
+            logger.info("Active user with camera detected and bot is not in VC. Triggering music start.")
+            asyncio.create_task(start_music_playback())
 
 @bot.event
 @handle_errors
@@ -1097,13 +1093,48 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if member.id == bot.user.id or member.bot:
         return
 
-    # Create a set of all moderated VCs for efficient lookups
-    moderated_vc_ids = {bot_config.STREAMING_VC_ID, *bot_config.ALT_VC_ID}
-    is_in_moderated_vc = lambda ch: ch and ch.id in moderated_vc_ids
+    # --- State Calculation ---
+    guild = member.guild
+    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
+    if not streaming_vc:
+        return
 
-    was_in_mod_vc = is_in_moderated_vc(before.channel)
-    is_now_in_mod_vc = is_in_moderated_vc(after.channel)
+    def get_camera_on_users(channel: discord.VoiceChannel):
+        if not channel:
+            return []
+        return [
+            m for m in channel.members
+            if m.voice and m.voice.self_video and not m.bot and m.id not in bot_config.ALLOWED_USERS
+        ]
 
+    # Calculate state BEFORE the change
+    before_cam_users_list = get_camera_on_users(before.channel) if before.channel == streaming_vc else []
+    if member in before_cam_users_list and not before.self_video:
+        before_cam_users_list.remove(member) # Correct for the member's pre-change state
+
+    # Calculate state AFTER the change
+    after_cam_users_list = get_camera_on_users(after.channel) if after.channel == streaming_vc else []
+
+    before_cam_count = len(before_cam_users_list)
+    after_cam_count = len(after_cam_users_list)
+    
+    # --- Automatic Skip/Refresh Logic ---
+    if state.omegle_enabled and bot_config.EMPTY_VC_PAUSE:
+        # Auto-run !skip when the first camera user appears
+        if before_cam_count == 0 and after_cam_count > 0:
+            logger.info("First camera user detected. Auto-running !skip.")
+            await omegle_handler.custom_skip()
+            if (command_channel := guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
+                await command_channel.send("Stream automatically started.")
+        
+        # Auto-run !refresh when the last camera user disappears
+        elif before_cam_count > 0 and after_cam_count == 0:
+            logger.info("Last camera user left. Auto-running !refresh.")
+            await omegle_handler.refresh()
+            if (command_channel := guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
+                await command_channel.send("Stream automatically paused.")
+
+    # --- VC Time Tracking ---
     was_in_streaming_vc = before.channel and before.channel.id == bot_config.STREAMING_VC_ID
     is_now_in_streaming_vc = after.channel and after.channel.id == bot_config.STREAMING_VC_ID
 
@@ -1124,134 +1155,52 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     state.vc_time_data[member.id]["sessions"].append({"start": start_time, "end": time.time(), "duration": duration, "vc_name": before.channel.name})
                     logger.info(f"VC Time Tracking: '{member.display_name}' ended session, adding {duration:.1f}s.")
 
-    # Read the flags once to reduce lock acquisition time, but re-check before critical actions.
-    is_mod_active = state.vc_moderation_active
-    is_hush_active = state.hush_override_active
-        
-    if is_mod_active:
-        # User joins a moderated VC
+    # --- Moderation Logic ---
+    moderated_vc_ids = {bot_config.STREAMING_VC_ID, *bot_config.ALT_VC_ID}
+    was_in_mod_vc = before.channel and before.channel.id in moderated_vc_ids
+    is_now_in_mod_vc = after.channel and after.channel.id in moderated_vc_ids
+    
+    if state.vc_moderation_active:
         if is_now_in_mod_vc and not was_in_mod_vc:
             if is_now_in_streaming_vc:
                 logger.info(f"VC JOIN: {member.display_name} ({member.name} | ID: {member.id}).")
                 asyncio.create_task(_handle_stream_vc_join(member))
                 if member.id not in bot_config.ALLOWED_USERS:
                     asyncio.create_task(_join_camera_failsafe_check(member, bot_config))
-
             if member.id not in bot_config.ALLOWED_USERS:
                 async with state.vc_lock:
                     state.camera_off_timers[member.id] = time.time()
-                    logger.info(f"Started camera grace period timer for '{member.display_name}'.")
-
                 asyncio.create_task(_soundboard_grace_protocol(member, bot_config))
 
-        # User leaves a moderated VC
-        elif was_in_mod_vc and not is_now_in_mod_vc:
-             if was_in_streaming_vc:
-                 logger.info(f"VC LEAVE: {member.display_name} ({member.name} | ID: {member.id}).")
-
-        # User changes state within the same moderated VC
         elif was_in_mod_vc and is_now_in_mod_vc:
-            if before.channel.id == bot_config.STREAMING_VC_ID and after.channel.id != bot_config.STREAMING_VC_ID:
-                 logger.info(f"VC SWITCH: {member.display_name} ({member.name} | ID: {member.id}).")
-
             camera_turned_on = not before.self_video and after.self_video
             camera_turned_off = before.self_video and not after.self_video
-
             if member.id not in bot_config.ALLOWED_USERS:
                 if camera_turned_off:
                     async with state.vc_lock:
                         state.camera_off_timers[member.id] = time.time()
-                    try:
-                        # Re-check the moderation flag to prevent acting on stale data
-                        if state.vc_moderation_active:
-                            await member.edit(mute=True, deafen=True)
-                            logger.info(f"Auto-muted/deafened '{member.display_name}' for turning camera off.")
-                    except Exception as e:
-                        logger.error(f"Failed to auto-mute '{member.display_name}': {e}")
-
+                    if state.vc_moderation_active:
+                        try: await member.edit(mute=True, deafen=True)
+                        except Exception as e: logger.error(f"Failed to auto-mute '{member.display_name}': {e}")
                 elif camera_turned_on:
                     async with state.vc_lock:
                         state.camera_off_timers.pop(member.id, None)
-                    # Re-check flags to prevent acting on stale data
                     if not state.hush_override_active and state.vc_moderation_active:
-                        try:
-                            await member.edit(mute=False, deafen=False)
-                            logger.info(f"Auto-unmuted '{member.display_name}' after turning camera on.")
-                        except Exception as e:
-                            logger.error(f"Failed to auto-unmute '{member.display_name}': {e}")
+                        try: await member.edit(mute=False, deafen=False)
+                        except Exception as e: logger.error(f"Failed to auto-unmute '{member.display_name}': {e}")
 
-    # --- NEW: Auto Skip/Refresh Logic ---
-    is_relevant_event = was_in_streaming_vc or is_now_in_streaming_vc
-    if is_relevant_event and state.omegle_enabled:
-        
-        # Calculate the number of users with camera on AFTER the event.
-        if is_now_in_streaming_vc:
-            cam_users_after_count = len([
-                m for m in after.channel.members
-                if m.voice and m.voice.self_video and m.id not in bot_config.ALLOWED_USERS and not m.bot
-            ])
-        elif was_in_streaming_vc and not is_now_in_streaming_vc:
-            # User left, count remaining members in the 'before' channel.
-            cam_users_after_count = len([
-                m for m in before.channel.members
-                if m.voice and m.voice.self_video and m.id not in bot_config.ALLOWED_USERS and not m.bot
-            ])
-        else:
-            cam_users_after_count = 0
-        
-        # Determine what kind of event happened to the member.
-        camera_turned_on = is_now_in_streaming_vc and not before.self_video and after.self_video
-        camera_turned_off = was_in_streaming_vc and before.self_video and not after.self_video
-        joined_with_cam = not was_in_streaming_vc and is_now_in_streaming_vc and after.self_video
-        left_with_cam = was_in_streaming_vc and not is_now_in_streaming_vc and before.self_video
+    # --- Allowed User & Punishment VC Mute Revert ---
+    if is_now_in_mod_vc and member.id in bot_config.ALLOWED_USERS and (member.voice.mute or member.voice.deaf):
+        try: await member.edit(mute=False, deafen=False)
+        except Exception: pass
+    if after.channel and after.channel.id == bot_config.PUNISHMENT_VC_ID and (member.voice.mute or member.voice.deaf):
+        try: await member.edit(mute=False, deafen=False)
+        except Exception: pass
 
-        # Calculate the number of users with camera on BEFORE the event by adjusting the 'after' count.
-        cam_users_before_count = cam_users_after_count
-        if camera_turned_on or joined_with_cam:
-            cam_users_before_count -= 1
-        elif camera_turned_off or left_with_cam:
-            cam_users_before_count += 1
-        
-        # Ensure count is not negative (shouldn't happen, but good practice).
-        cam_users_before_count = max(0, cam_users_before_count)
-
-        # --- Auto !skip logic (0 -> 1+) ---
-        if cam_users_before_count == 0 and cam_users_after_count > 0:
-            logger.info(f"Auto Skip: Camera users went from 0 to {cam_users_after_count}. Triggering skip command.")
-            await omegle_handler.custom_skip()
-            if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
-                try:
-                    await command_channel.send("Stream automatically started")
-                except Exception as e:
-                    logger.error(f"Failed to send auto-skip notification: {e}")
-
-        # --- Auto !refresh logic (last cam user leaves/turns cam off) ---
-        if bot_config.EMPTY_VC_PAUSE and cam_users_before_count > 0 and cam_users_after_count == 0:
-            # This condition is met when the count drops to zero. We also check that the specific event
-            # was a user who had their camera on leaving or turning it off, as requested.
-            if left_with_cam or camera_turned_off:
-                logger.info(f"Auto Refresh: Last camera user left/turned cam off. Before: {cam_users_before_count}, After: 0.")
-                await omegle_handler.refresh()
-                if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
-                    try:
-                        await command_channel.send("Stream automatically paused")
-                    except Exception as e:
-                        logger.error(f"Failed to send auto-refresh notification: {e}")
-
-
-    if after.channel and after.channel.id == bot_config.PUNISHMENT_VC_ID:
-        if member.voice and (member.voice.mute or member.voice.deaf):
-            try:
-                await member.edit(mute=False, deafen=False)
-                logger.info(f"Automatically unmuted/undeafened '{member.display_name}' in Punishment VC.")
-            except Exception as e:
-                logger.error(f"Failed to unmute/undeafen '{member.display_name}' in Punishment VC: {e}")
-
-    is_event_in_streaming_vc = (before.channel and before.channel.id == bot_config.STREAMING_VC_ID) or \
-                               (after.channel and after.channel.id == bot_config.STREAMING_VC_ID)
-
+    # --- Task & Presence Management ---
+    is_event_in_streaming_vc = was_in_streaming_vc or is_now_in_streaming_vc
     if is_event_in_streaming_vc:
-        asyncio.create_task(manage_music_presence())
+        asyncio.create_task(manage_music_presence(before_cam_count, after_cam_count))
         asyncio.create_task(manage_menu_task_presence())
 
 
@@ -1585,7 +1534,10 @@ async def music_playback_watchdog():
     # The manage_music_presence function already handles both joining and leaving perfectly.
     if (human_listeners_with_cam and not is_bot_connected) or (not human_listeners_with_cam and is_bot_connected):
         logger.info("Watchdog: Mismatch in bot presence and listeners. Triggering presence manager.")
-        asyncio.create_task(manage_music_presence())
+        # We need to calculate the before/after counts to pass to the updated function
+        before_count = 0 if not is_bot_connected else 1 
+        after_count = 1 if human_listeners_with_cam else 0
+        asyncio.create_task(manage_music_presence(before_count, after_count))
         return
 
     # Case 2: Bot is connected and listeners are present, but nothing is playing.
@@ -2903,3 +2855,4 @@ if __name__ == "__main__":
         if 'state' in globals():
             logger.info("Performing final state save..."); asyncio.run(save_state_async())
         logger.info("Shutdown complete")
+
