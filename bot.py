@@ -335,7 +335,7 @@ async def global_mvoldown() -> None:
 async def ensure_voice_connection() -> bool:
     """
     Ensures the bot is connected to the correct voice channel, handling reconnections gracefully.
-    This modern approach lets discord.py manage the connection state, avoiding forceful disconnects.
+    This modern approach prioritizes checking the existing state before acting to prevent conflicts.
     """
     if not state.music_enabled:
         return False
@@ -345,45 +345,43 @@ async def ensure_voice_connection() -> bool:
         logger.error("Guild not found, cannot ensure voice connection.")
         return False
         
-    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
-    if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel):
+    target_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
+    if not target_vc or not isinstance(target_vc, discord.VoiceChannel):
         logger.error(f"STREAMING_VC_ID ({bot_config.STREAMING_VC_ID}) is invalid or not a voice channel.")
         return False
 
-    # Use guild.voice_client as the single source of truth for the connection state.
-    current_vc = guild.voice_client
+    voice_client = guild.voice_client
 
-    # Check if we are already perfectly connected.
-    if current_vc and current_vc.is_connected() and current_vc.channel == streaming_vc:
-        bot.voice_client_music = current_vc # Ensure our reference is up to date
+    # Case 1: Bot is already perfectly connected.
+    if voice_client and voice_client.is_connected() and voice_client.channel == target_vc:
+        bot.voice_client_music = voice_client # Ensure our reference is up-to-date
         return True
 
-    logger.info(f"Ensuring connection to voice channel: {streaming_vc.name}...")
-    try:
-        # --- NEW, SIMPLIFIED AND MORE RELIABLE CONNECTION LOGIC ---
-        # The .connect() method is smart. If the bot is already in a channel in this guild,
-        # it will automatically move it. If it's not connected, it will connect. This single call
-        # replaces the old, forceful disconnect-and-reconnect logic that can cause race conditions.
-        bot.voice_client_music = await streaming_vc.connect(reconnect=True, timeout=60.0)
-        
-        logger.info(f"Successfully connected/moved to {streaming_vc.name}.")
-        return True
-    except asyncio.TimeoutError:
-        logger.error(f"Connection to voice channel '{streaming_vc.name}' timed out.")
-        if guild.voice_client:
-            await guild.voice_client.disconnect(force=True)
-        bot.voice_client_music = None
-        return False
-    except discord.ClientException as e:
-        logger.error(f"ClientException while connecting to {streaming_vc.name}: {e}. This indicates an issue with connection state.")
-        # This can mean it's already connecting. We can trust the guild's voice_client attribute.
-        if guild.voice_client:
-            bot.voice_client_music = guild.voice_client
-            logger.info("Re-assigned existing voice client during ClientException.")
+    # Case 2: Bot is connected, but in the wrong channel. Move it.
+    if voice_client and voice_client.is_connected():
+        logger.info(f"Bot is in the wrong channel ({voice_client.channel.name}). Moving to {target_vc.name}...")
+        try:
+            await voice_client.move_to(target_vc)
+            bot.voice_client_music = voice_client # Update reference
+            logger.info("Successfully moved voice client.")
             return True
-        return False
+        except Exception as e:
+            logger.error(f"Failed to move voice client: {e}. Attempting a full reconnect.")
+            # If the move fails, force a disconnect to clear the broken state.
+            await voice_client.disconnect(force=True)
+
+    # Case 3: Bot is not connected, or was in a zombie state and has now been disconnected.
+    logger.info(f"Attempting to connect to {target_vc.name}...")
+    try:
+        bot.voice_client_music = await target_vc.connect(reconnect=True, timeout=60.0)
+        logger.info(f"Successfully connected to {target_vc.name}.")
+        return True
     except Exception as e:
-        logger.error(f"An unexpected error occurred while connecting to {streaming_vc.name}: {e}", exc_info=True)
+        logger.error(f"Failed to establish a new voice connection to {target_vc.name}: {e}", exc_info=True)
+        # As a final failsafe, check if another task connected while this one failed.
+        if guild.voice_client and guild.voice_client.is_connected():
+            bot.voice_client_music = guild.voice_client
+            return True
         bot.voice_client_music = None
         return False
 
@@ -836,34 +834,6 @@ async def _handle_stream_vc_join(member: discord.Member):
             state.failed_dm_users.add(member.id)
         logger.error(f"Generic error sending DM to {member.name}: {e}", exc_info=True)
 
-
-async def _check_for_auto_pause(vc: discord.VoiceChannel, reason: str):
-    """
-    Checks if the conditions for an automatic stream refresh (pause) are met.
-    This is typically triggered when the last user with a camera leaves or turns it off.
-    This behavior can be disabled via the EMPTY_VC_PAUSE config setting.
-    """
-    if not vc or not bot_config.EMPTY_VC_PAUSE:
-        return
-
-    users_with_camera = [m for m in vc.members if m.voice and m.voice.self_video and m.id not in bot_config.ALLOWED_USERS and not m.bot]
-
-    async with state.vc_lock:
-        if not users_with_camera and (time.time() - state.last_auto_pause_time >= 1):
-            state.last_auto_pause_time = time.time()
-            should_refresh = True
-        else:
-            should_refresh = False
-
-    if should_refresh:
-        await omegle_handler.refresh()
-        logger.info(reason)
-        if (command_channel := vc.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
-            try:
-                await command_channel.send("Stream automatically paused")
-            except Exception as e:
-                logger.error(f"Failed to send auto-refresh notification: {e}")
-
 async def _join_camera_failsafe_check(member: discord.Member, config: BotConfig):
     """
     After a user joins, waits 5 seconds and checks if their camera is on.
@@ -1176,20 +1146,13 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
         # User leaves a moderated VC
         elif was_in_mod_vc and not is_now_in_mod_vc:
-            # Specifically check if the channel they left was the streaming VC
-            if before.channel.id == bot_config.STREAMING_VC_ID:
-                logger.info(f"VC LEAVE: {member.display_name} ({member.name} | ID: {member.id}).")
-                # Trigger the auto-pause check, passing the channel they left
-                asyncio.create_task(_check_for_auto_pause(before.channel, f"Auto Refreshed - '{member.display_name}' left the streaming VC."))
+             if was_in_streaming_vc:
+                 logger.info(f"VC LEAVE: {member.display_name} ({member.name} | ID: {member.id}).")
 
         # User changes state within the same moderated VC
         elif was_in_mod_vc and is_now_in_mod_vc:
-            # FIX: Explicitly check if the user moved *away* from the streaming VC,
-            # even if it's to another moderated VC (like the ALT_VC).
             if before.channel.id == bot_config.STREAMING_VC_ID and after.channel.id != bot_config.STREAMING_VC_ID:
-                logger.info(f"VC SWITCH: {member.display_name} ({member.name} | ID: {member.id}).")
-                # Trigger the auto-pause check, passing the channel they left.
-                asyncio.create_task(_check_for_auto_pause(before.channel, f"Auto Refreshed - '{member.display_name}' switched VCs."))
+                 logger.info(f"VC SWITCH: {member.display_name} ({member.name} | ID: {member.id}).")
 
             camera_turned_on = not before.self_video and after.self_video
             camera_turned_off = before.self_video and not after.self_video
@@ -1205,8 +1168,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                             logger.info(f"Auto-muted/deafened '{member.display_name}' for turning camera off.")
                     except Exception as e:
                         logger.error(f"Failed to auto-mute '{member.display_name}': {e}")
-                    if after.channel.id == bot_config.STREAMING_VC_ID:
-                        asyncio.create_task(_check_for_auto_pause(after.channel, "Auto Refreshed - Camera Turned Off"))
 
                 elif camera_turned_on:
                     async with state.vc_lock:
@@ -1219,13 +1180,64 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                         except Exception as e:
                             logger.error(f"Failed to auto-unmute '{member.display_name}': {e}")
 
-    if is_now_in_mod_vc and member.id in bot_config.ALLOWED_USERS:
-        if member.voice and ((member.voice.mute and not member.voice.self_mute) or (member.voice.deaf and not member.voice.self_deaf)):
-            try:
-                await member.edit(mute=False, deafen=False)
-                logger.info(f"Reverted server mute/deafen for allowed user '{member.display_name}'")
-            except Exception as e:
-                logger.error(f"Failed to revert mute/deafen for '{member.display_name}': {e}")
+    # --- NEW: Auto Skip/Refresh Logic ---
+    is_relevant_event = was_in_streaming_vc or is_now_in_streaming_vc
+    if is_relevant_event and state.omegle_enabled:
+        
+        # Calculate the number of users with camera on AFTER the event.
+        if is_now_in_streaming_vc:
+            cam_users_after_count = len([
+                m for m in after.channel.members
+                if m.voice and m.voice.self_video and m.id not in bot_config.ALLOWED_USERS and not m.bot
+            ])
+        elif was_in_streaming_vc and not is_now_in_streaming_vc:
+            # User left, count remaining members in the 'before' channel.
+            cam_users_after_count = len([
+                m for m in before.channel.members
+                if m.voice and m.voice.self_video and m.id not in bot_config.ALLOWED_USERS and not m.bot
+            ])
+        else:
+            cam_users_after_count = 0
+        
+        # Determine what kind of event happened to the member.
+        camera_turned_on = is_now_in_streaming_vc and not before.self_video and after.self_video
+        camera_turned_off = was_in_streaming_vc and before.self_video and not after.self_video
+        joined_with_cam = not was_in_streaming_vc and is_now_in_streaming_vc and after.self_video
+        left_with_cam = was_in_streaming_vc and not is_now_in_streaming_vc and before.self_video
+
+        # Calculate the number of users with camera on BEFORE the event by adjusting the 'after' count.
+        cam_users_before_count = cam_users_after_count
+        if camera_turned_on or joined_with_cam:
+            cam_users_before_count -= 1
+        elif camera_turned_off or left_with_cam:
+            cam_users_before_count += 1
+        
+        # Ensure count is not negative (shouldn't happen, but good practice).
+        cam_users_before_count = max(0, cam_users_before_count)
+
+        # --- Auto !skip logic (0 -> 1+) ---
+        if cam_users_before_count == 0 and cam_users_after_count > 0:
+            logger.info(f"Auto Skip: Camera users went from 0 to {cam_users_after_count}. Triggering skip command.")
+            await omegle_handler.custom_skip()
+            if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
+                try:
+                    await command_channel.send("Stream automatically started")
+                except Exception as e:
+                    logger.error(f"Failed to send auto-skip notification: {e}")
+
+        # --- Auto !refresh logic (last cam user leaves/turns cam off) ---
+        if bot_config.EMPTY_VC_PAUSE and cam_users_before_count > 0 and cam_users_after_count == 0:
+            # This condition is met when the count drops to zero. We also check that the specific event
+            # was a user who had their camera on leaving or turning it off, as requested.
+            if left_with_cam or camera_turned_off:
+                logger.info(f"Auto Refresh: Last camera user left/turned cam off. Before: {cam_users_before_count}, After: 0.")
+                await omegle_handler.refresh()
+                if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
+                    try:
+                        await command_channel.send("Stream automatically paused")
+                    except Exception as e:
+                        logger.error(f"Failed to send auto-refresh notification: {e}")
+
 
     if after.channel and after.channel.id == bot_config.PUNISHMENT_VC_ID:
         if member.voice and (member.voice.mute or member.voice.deaf):
