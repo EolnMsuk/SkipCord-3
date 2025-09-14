@@ -852,10 +852,13 @@ class BotHelper:
 
         for role in sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True):
             if role.name != "@everyone" and role.members:
+                # Sort members alphabetically by their real username (case-insensitive)
+                sorted_members = sorted(role.members, key=lambda m: m.name.lower())
+
                 def process_member(member): return f"{member.display_name} ({member.name}#{member.discriminator})"
                 
                 embeds = create_message_chunks(
-                    entries=role.members, title=f"Role: {role.name}", process_entry=process_member,
+                    entries=sorted_members, title=f"Role: {role.name}", process_entry=process_member,
                     as_embed=True, embed_color=role.color or discord.Color.default()
                 )
                 for i, embed in enumerate(embeds):
