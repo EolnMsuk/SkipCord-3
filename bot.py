@@ -2149,7 +2149,16 @@ async def msearch(ctx, *, query: str):
                         search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{self.query}", download=False)
                         if 'entries' in search_results:
                             for entry in search_results.get('entries', []):
-                                if entry and entry.get('url'): new_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True})
+                                if not entry or not entry.get('url'):
+                                    continue
+                                
+                                # [FIX ADDED HERE] Filter unavailable videos
+                                title = entry.get('title', '').lower()
+                                if '[deleted video]' in title or '[private video]' in title:
+                                    logger.info(f"Skipping unavailable video from YouTube 'Next Page': {entry.get('title')}")
+                                    continue
+
+                                new_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True})
                 except Exception as e:
                     logger.error(f"YouTube next page search failed for query '{self.query}': {e}", exc_info=True)
                     self.update_components(); await interaction.message.edit(content="An error occurred.", view=self); return
@@ -2174,7 +2183,16 @@ async def msearch(ctx, *, query: str):
                         search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{self.query}", download=False)
                         if 'entries' in search_results:
                             for entry in search_results['entries']:
-                                if entry and entry.get('url'): youtube_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True})
+                                if not entry or not entry.get('url'):
+                                    continue
+                                
+                                # [FIX ADDED HERE] Filter unavailable videos
+                                title = entry.get('title', '').lower()
+                                if '[deleted video]' in title or '[private video]' in title:
+                                    logger.info(f"Skipping unavailable video from 'Search YouTube' button: {entry.get('title')}")
+                                    continue
+                                
+                                youtube_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True})
                 except Exception as e:
                     await interaction.message.edit(content=f"❌ An error occurred: {e}"); logger.error(f"Youtube failed: {e}"); return
                 if not youtube_hits:
