@@ -233,6 +233,12 @@ class QueueView(discord.ui.View):
         self.total_pages = (len(self.full_queue) + self.page_size - 1) // self.page_size
         self.total_pages = max(1, self.total_pages)
 
+    def get_content(self) -> str:
+        """Generates the content string for the queue message."""
+        total_songs = len(self.full_queue)
+        page_num = self.current_page + 1
+        return f"**Current Queue ({total_songs} songs):** Page {page_num}/{self.total_pages}\n*(Select a song to jump to it)*"
+
     def update_components(self):
         self.clear_items()
         
@@ -261,7 +267,7 @@ class QueueView(discord.ui.View):
                 self.current_page += 1
             
             self.update_components()
-            await interaction.response.edit_message(view=self)
+            await interaction.response.edit_message(content=self.get_content(), view=self)
         
         button.callback = nav_callback
         return button
@@ -1807,4 +1813,4 @@ class BotHelper:
         
         view = QueueView(self.bot, self.state, ctx.author)
         await view.start()
-        view.message = await ctx.send(content="**Current Queue:** (Select a song to jump to it)", view=view)
+        view.message = await ctx.send(content=view.get_content(), view=view)

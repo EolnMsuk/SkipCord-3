@@ -1858,6 +1858,8 @@ def extract_youtube_url(query: str) -> Optional[str]:
         return f"https://www.youtube.com/watch?v={video_id}"
     return None
 
+# In bot.py
+
 @bot.command(name='msearch', aliases=['m'])
 @require_user_preconditions()
 @handle_errors
@@ -1873,8 +1875,6 @@ async def msearch(ctx, *, query: str):
     search_query = query.strip()
     status_msg = await ctx.send(f"⏳ Searching for `{search_query}`...")
     
-    # --- Use the helper to clean the input query ---
-    # If a YouTube link is found, it's extracted. Otherwise, it uses the original query.
     clean_query = extract_youtube_url(search_query) or search_query
 
     all_hits = []
@@ -1882,14 +1882,13 @@ async def msearch(ctx, *, query: str):
 
     url_pattern = re.compile(
         r'https?://(www\.)?'
-        r'(youtube|youtu|soundcloud|spotify|bandcamp)\.(com|be)/'
+        r'((music\.)?youtube|youtu|soundcloud|spotify|bandcamp)\.(com|be)/'
         r'.+'
     )
     
     is_spotify_url = 'spotify' in clean_query.lower()
     is_generic_url = url_pattern.match(clean_query)
 
-    # --- 1. SPOTIFY API HANDLING ---
     if is_spotify_url:
         if not sp:
             await status_msg.edit(content="❌ Spotify support is not configured. Missing credentials in `.env` file.")
@@ -1923,6 +1922,12 @@ async def msearch(ctx, *, query: str):
                         search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch1:{yt_query}", download=False)
                         if search_results and search_results.get('entries'):
                             video_info = search_results['entries'][0]
+                            
+                            title = video_info.get('title', '').lower()
+                            if '[deleted video]' in title or '[private video]' in title:
+                                logger.info(f"Skipping unavailable Spotify->YouTube result: {video_info.get('title')}")
+                                continue
+
                             all_hits.append({
                                 'title': video_info.get('title', 'Unknown Title'),
                                 'path': video_info.get('webpage_url', video_info.get('url')),
@@ -1967,22 +1972,38 @@ async def msearch(ctx, *, query: str):
             
         return
 
-    # --- 2. YOUTUBE / DIRECT URL HANDLING ---
+    # --- [MODIFIED BLOCK] YOUTUBE / DIRECT URL HANDLING ---
     elif is_generic_url:
         await status_msg.edit(content=f"⏳ Processing URL: `{clean_query}`...")
         try:
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                 search_results = await asyncio.to_thread(ydl.extract_info, clean_query, download=False)
-                if search_results and 'entries' in search_results: # This handles playlists
+                
+                # This block now filters out unavailable videos from playlists
+                if search_results and 'entries' in search_results:
                     for entry in search_results['entries']:
-                        if entry and entry.get('url'):
-                            all_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True, 'ctx': ctx})
-                elif search_results and search_results.get('url'): # This handles single videos
-                    all_hits.append({'title': search_results.get('title', 'Unknown Title'), 'path': search_results.get('webpage_url', search_results.get('url')), 'is_stream': True, 'ctx': ctx})
+                        if not entry or not entry.get('url'):
+                            continue
+                        
+                        title = entry.get('title', '').lower()
+                        if '[deleted video]' in title or '[private video]' in title:
+                            logger.info(f"Skipping unavailable video from URL/Playlist: {entry.get('title')}")
+                            continue
+                            
+                        all_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True, 'ctx': ctx})
+                
+                # This block now filters out unavailable single videos
+                elif search_results and search_results.get('url'):
+                    title = search_results.get('title', '').lower()
+                    if '[deleted video]' not in title and '[private video]' not in title:
+                        all_hits.append({'title': search_results.get('title', 'Unknown Title'), 'path': search_results.get('webpage_url', search_results.get('url')), 'is_stream': True, 'ctx': ctx})
+                    else:
+                        logger.info(f"Skipping unavailable video from single URL: {search_results.get('title')}")
+
         except Exception as e:
             logger.warning(f"Direct URL processing for '{clean_query}' failed with error: {e}. Falling back to text search.")
+    # --- [END MODIFIED BLOCK] ---
 
-    # --- 3. LOCAL & TEXT SEARCH (FALLBACK) ---
     if not all_hits:
         if not is_generic_url:
             await status_msg.edit(content=f"⏳ Searching for `{clean_query}` in the local library...")
@@ -2008,18 +2029,21 @@ async def msearch(ctx, *, query: str):
                     if search_results and 'entries' in search_results:
                         for entry in search_results['entries']:
                             if entry and entry.get('url'):
+                                title = entry.get('title', '').lower()
+                                if '[deleted video]' in title or '[private video]' in title:
+                                    logger.info(f"Skipping unavailable video from search: {entry.get('title')}")
+                                    continue
+                                
                                 all_hits.append({'title': entry.get('title', 'Unknown Title'),'path': entry.get('webpage_url', entry.get('url')),'is_stream': True,'ctx': ctx})
             except Exception as e:
                 await status_msg.edit(content=f"❌ An error occurred while searching YouTube: {e}")
                 logger.error(f"Youtube search failed for query '{clean_query}': {e}")
                 return
 
-    # --- 4. DISPLAY RESULTS AND QUEUE LOGIC ---
     if not all_hits:
-        await status_msg.edit(content=f"❌ No songs found matching `{search_query}`.") # Show original query here for user clarity
+        await status_msg.edit(content=f"❌ No songs found matching `{search_query}`.")
         return
 
-    # --- Logic for URL Playlists (more than 1 song) ---
     if is_generic_url and len(all_hits) > 1:
         added_count, skipped_count, was_idle = 0, 0, False
         async with state.music_lock:
@@ -2044,12 +2068,10 @@ async def msearch(ctx, *, query: str):
         if was_idle and added_count > 0: await play_next_song()
         return
 
-    # --- [NEW] Logic for Single Song URLs ---
     if is_generic_url and len(all_hits) == 1:
         song_to_add = all_hits[0]
         song_title = song_to_add.get('title', 'Unknown Title')
 
-        # Check for duplicates before adding
         if await is_song_in_queue(state, song_to_add['path']):
             await status_msg.edit(content=f"⚠️ **{song_title}** is already in the queue.")
             return
@@ -2064,10 +2086,9 @@ async def msearch(ctx, *, query: str):
         if was_idle:
             await play_next_song()
 
-        return # Exit the command here to prevent the menu from showing
+        return
 
     class SearchResultsView(discord.ui.View):
-        # ... (The SearchResultsView class remains exactly the same as in your original file)
         def __init__(self, hits: list, author: discord.Member, query: str, is_Youtube: bool, youtube_page: int = 1):
             super().__init__(timeout=180.0)
             self.hits, self.author, self.query, self.is_Youtube, self.youtube_page = hits, author, query, is_Youtube, youtube_page
