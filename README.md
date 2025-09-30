@@ -5,7 +5,6 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 - [Key Features](#-key-features)
 - [Command List](#-command-list)
 - [How to Setup](#%EF%B8%8F-setup--configuration)
-- [Troubleshooting](#troubleshooting)
 - [How to Donate](#troubleshooting)
 
 -----
