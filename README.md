@@ -248,4 +248,7 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
 
 -----
 
-### Donations are appreciated, cashapp: `$eolnmsuk` or btc: `bc1quhcdu2lry5cyg44suee7lut7tawp5y82sw7a2e`
+### Donations
+
+  * **CashApp** `$eolnmsuk` 
+  * **Bitcoin** `bc1quhcdu2lry5cyg44suee7lut7tawp5y82sw7a2e`
