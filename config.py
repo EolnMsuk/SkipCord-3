@@ -47,13 +47,29 @@ EMPTY_VC_PAUSE = True
 # The URL the bot will open. Change only if you use a different Omegle mirror.
 OMEGLE_VIDEO_URL = "https://uhmegle.com/video"
 
-# The FULL path to your Microsoft Edge "User Data" folder.
-# This is crucial for the browser to remember settings and appear less like a bot.
-# To find it: Open Edge, go to `edge://version/`, and copy the "Profile path".
-# Example: "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data/Profile 3/Default"
-# Then, remove the "Default" part from the end of the path.
-# Use double backslashes instead of forward slashes like the example below:
-EDGE_USER_DATA_DIR = "C:\\Users\\UserName\\AppData\\Local\\Microsoft\\Edge\\User Data\\Profile 3"
+# The FULL path to your Microsoft Edge "Profile" folder. This is crucial for the 
+# browser to remember settings, stay logged into sites, and appear less like a bot.
+#
+# HOW TO FIND IT:
+#  1. Open Edge and go to `edge://version/`
+#  2. Copy the entire "Profile path". 
+#     - It will look something like: 
+#       C:\Users\YourUser\AppData\Local\Microsoft\Edge\User Data\Profile 3
+#     - If you don't use profiles, it might end in `\Default` instead of `\Profile 3`
+#
+# HOW TO FORMAT IT:
+#  - Replace every single backslash `\` with a double backslash `\\`.
+#  - Enclose the entire path in quotes.
+#
+# EXAMPLES:
+# EDGE_USER_DATA_DIR = "C:\\Users\\YourUser\\AppData\\Local\\Microsoft\\Edge\\User Data\\Profile 3"
+# EDGE_USER_DATA_DIR = "C:\\Users\\YourUser\\AppData\\Local\\Microsoft\\Edge\\User Data\\Default"
+#
+# TIP FOR A DEDICATED BOT PROFILE:
+# You can enter a path to a profile that doesn't exist yet, like "Profile 10".
+# The bot will create a new, clean profile folder when it starts. You can then
+# open Edge with that profile to customize it (e.g., install extensions like Chromegle).
+EDGE_USER_DATA_DIR = "C:\\Users\\YourUser\\AppData\\Local\\Microsoft\\Edge\\User Data\\Profile 3"
 
 # --- ⏰ AUTOMATED STATS SCHEDULE (UTC TIME) ⏰ ---
 # This determines when the daily stats report is posted and stats are reset.
@@ -154,5 +170,6 @@ GLOBAL_HOTKEY_MVOLDOWN = "["            # The key to trigger the !mvoldown. Uses
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = "]"              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
