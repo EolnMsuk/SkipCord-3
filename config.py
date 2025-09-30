@@ -50,9 +50,10 @@ OMEGLE_VIDEO_URL = "https://uhmegle.com/video"
 # The FULL path to your Microsoft Edge "User Data" folder.
 # This is crucial for the browser to remember settings and appear less like a bot.
 # To find it: Open Edge, go to `edge://version/`, and copy the "Profile path".
-# Then, remove the "Default" or "Profile X" part from the end of the path.
-# Example: "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data"
-EDGE_USER_DATA_DIR = "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data"
+# Example: "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data/Profile 3/Default"
+# Then, remove the "Default" part from the end of the path.
+# Use double backslashes instead of forward slashes like the example below:
+EDGE_USER_DATA_DIR = "C:\\Users\\UserName\\AppData\\Local\\Microsoft\\Edge\\User Data\\Profile 3"
 
 # --- ⏰ AUTOMATED STATS SCHEDULE (UTC TIME) ⏰ ---
 # This determines when the daily stats report is posted and stats are reset.
@@ -153,4 +154,5 @@ GLOBAL_HOTKEY_MVOLDOWN = "["            # The key to trigger the !mvoldown. Uses
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = "]"              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
