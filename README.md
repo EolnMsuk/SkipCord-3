@@ -249,7 +249,7 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
 
 -----
 
-### How to Donate
+### Donations
 
   * **CashApp:** `$eolnmsuk` 
   * **Bitcoin:** `bc1quhcdu2lry5cyg44suee7lut7tawp5y82sw7a2e`
