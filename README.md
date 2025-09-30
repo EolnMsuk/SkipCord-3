@@ -182,8 +182,8 @@ CHAT_CHANNEL_ID = 123456789012345678         # Channel for join/leave/ban notifi
 STREAMING_VC_ID = 123456789012345678         # Main streaming/music voice channel
 PUNISHMENT_VC_ID = 123456789012345678        # VC where users are moved for a first violation
 OMEGLE_VIDEO_URL = "https://uhmegle.com/video"     # URL for the streaming website
-# Find by going to edge://version/ in your browser and copying the "Profile path"
-EDGE_USER_DATA_DIR = "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data"
+# Go to edge://version/ in edge and copy the "Profile path" without the "Default" at the end.
+EDGE_USER_DATA_DIR = "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data/Profile 2/"
 
 # --- PERMISSIONS ---
 ALLOWED_USERS = {123456789012345678, 987654321098765432} # User IDs with full bot access
