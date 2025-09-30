@@ -245,3 +245,7 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
   * **Music Doesn't Play**: Confirm that **FFmpeg** is installed and its location is included in your system's PATH environment variable.
   * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct and have no extra spaces.
   * **Other Issues**: Check the `bot.log` file in the bot's folder for detailed error messages.
+
+-----
+
+### Donations are appreciated, cashapp: `$eolnmsuk` or btc: `bc1quhcdu2lry5cyg44suee7lut7tawp5y82sw7a2e`
