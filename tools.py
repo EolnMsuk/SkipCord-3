@@ -422,7 +422,11 @@ class BotState:
     window_size: Optional[Dict[str, int]] = field(default=None)
     window_position: Optional[Dict[str, int]] = field(default=None)
 
+    # Omegle ban state
+    is_banned: bool = False
+
     # Transient state (not saved to disk)
+    ban_message_id: Optional[int] = None
     announcement_context: Optional[Any] = None
     play_next_override: bool = False
     stop_after_clear: bool = False
@@ -514,6 +518,9 @@ class BotState:
             # Window geometry state
             "window_size": self.window_size,
             "window_position": self.window_position,
+
+            # Omegle ban state
+            "is_banned": self.is_banned,
         }
 
     @classmethod
@@ -561,6 +568,9 @@ class BotState:
         # Window geometry state
         state.window_size = data.get("window_size", None)
         state.window_position = data.get("window_position", None)
+        
+        # Omegle ban state
+        state.is_banned = data.get("is_banned", False)
         
         return state
 

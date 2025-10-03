@@ -11,7 +11,8 @@ from typing import Optional, Union
 import discord
 from discord.ext import commands
 from selenium import webdriver
-from selenium.common.exceptions import WebDriverException, StaleElementReferenceException
+from selenium.common.exceptions import WebDriverException, StaleElementReferenceException, UnexpectedAlertPresentException
+from selenium.webdriver.edge.service import Service
 from loguru import logger
 
 # Local application imports
@@ -86,7 +87,8 @@ class OmegleHandler:
     This includes initializing the browser, navigating, and sending commands.
     """
 
-    def __init__(self, bot_config: BotConfig):
+    def __init__(self, bot: commands.Bot, bot_config: BotConfig):
+        self.bot = bot
         self.config = bot_config
         self.driver: Optional[webdriver.Edge] = None
         self._driver_initialized = False # A flag to track if the driver has been successfully initialized.
@@ -96,7 +98,8 @@ class OmegleHandler:
     async def initialize(self) -> bool:
         """
         Initializes the Selenium Edge WebDriver with enhanced anti-detection measures.
-        It now lets Selenium's built-in SeleniumManager handle the driver automatically.
+        It first tries Selenium's automatic manager, then falls back to a specified
+        driver path if the first attempt fails.
 
         Returns:
             True if the driver was initialized successfully, False otherwise.
@@ -106,7 +109,6 @@ class OmegleHandler:
                 if self.driver is not None:
                     await self.close()
 
-                logger.info("Initializing Selenium with automatic driver management...")
                 options = webdriver.EdgeOptions()
 
                 # --- Stealth and stability arguments ---
@@ -122,10 +124,26 @@ class OmegleHandler:
                 options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
                 options.add_experimental_option('useAutomationExtension', False)
                 
-                # --- NEW, SIMPLIFIED INITIALIZATION ---
-                # This single line replaces all the old webdriver-manager and service code.
-                # Selenium's own manager will find and use the correct driver.
-                self.driver = await asyncio.to_thread(webdriver.Edge, options=options)
+                # --- [NEW] Primary Initialization (Automatic) ---
+                try:
+                    logger.info("Initializing Selenium with automatic driver management...")
+                    self.driver = await asyncio.to_thread(webdriver.Edge, options=options)
+                    logger.info("Automatic driver management successful.")
+                except WebDriverException as auto_e:
+                    logger.warning(f"Automatic driver management failed: {auto_e}")
+                    # --- [NEW] Fallback Initialization (Manual Path) ---
+                    if self.config.EDGE_DRIVER_PATH and os.path.exists(self.config.EDGE_DRIVER_PATH):
+                        logger.info(f"Attempting fallback with specified driver path: {self.config.EDGE_DRIVER_PATH}")
+                        try:
+                            service = Service(executable_path=self.config.EDGE_DRIVER_PATH)
+                            self.driver = await asyncio.to_thread(webdriver.Edge, service=service, options=options)
+                            logger.info("Fallback driver path successful.")
+                        except Exception as fallback_e:
+                            logger.error(f"Fallback driver path also failed: {fallback_e}")
+                            raise fallback_e # Re-raise to be caught by the outer exception handler
+                    else:
+                        logger.warning("No fallback driver path specified or path is invalid. Retrying with automatic management.")
+                        raise auto_e # Re-raise the original exception
                 
                 # --- Execute advanced stealth script before the website can run its own scripts ---
                 stealth_script = """
@@ -157,17 +175,15 @@ class OmegleHandler:
                 await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
 
                 self._driver_initialized = True
-                logger.info("Selenium driver initialized successfully using automatic management.")
+                logger.info("Selenium driver initialized successfully.")
                 return True
-            except WebDriverException as e:
+                
+            except Exception as e:
                 logger.error(f"Selenium initialization attempt {attempt + 1} failed: {e}")
                 if "This version of Microsoft Edge Driver only supports" in str(e):
                     logger.critical("CRITICAL: WebDriver version mismatch. Please update Edge browser or check for driver issues.")
                 if attempt < DRIVER_INIT_RETRIES - 1:
                     await asyncio.sleep(DRIVER_INIT_DELAY)
-            except Exception as e:
-                logger.error(f"An unexpected error occurred during Selenium initialization: {e}", exc_info=True)
-                break
         
         logger.critical("Failed to initialize Selenium driver after retries.")
         self._driver_initialized = False
@@ -221,28 +237,35 @@ class OmegleHandler:
     @require_healthy_driver
     async def custom_skip(self, ctx: Optional[commands.Context] = None) -> bool:
         """
-        Executes a "skip" action on the web page by injecting JavaScript to simulate
-        keyboard events (e.g., pressing the Escape key twice).
-        
-        Returns:
-            True if successful, False otherwise.
+        Executes a "skip" action. It first ensures the browser is on the correct URL,
+        then simulates key presses to skip the current chat.
         """
-        # Get the keys to press from the config.
-        keys = getattr(config, "SKIP_COMMAND_KEY", None)
+        # --- URL Verification & Redirect (Runs for all calls) ---
+        try:
+            current_url = await asyncio.to_thread(lambda: self.driver.current_url)
 
-        # If the key is not set, or set to None/0, default to Escape, Escape.
+            if self.config.OMEGLE_VIDEO_URL not in current_url:
+                logger.warning(f"URL Mismatch: Not on video page (Currently at: {current_url}). Redirecting before skip.")
+                if ctx:
+                    await ctx.send("Browser is on the wrong page. Redirecting to the stream now...", delete_after=10)
+                await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
+                await asyncio.sleep(2.0)
+
+        except Exception as e:
+            logger.error(f"Failed during pre-skip URL check/redirect: {e}", exc_info=True)
+            if ctx:
+                await ctx.send("Error checking browser URL. The browser may be unresponsive.")
+            return False
+
+        # --- Standard Skip Logic ---
+        keys = getattr(config, "SKIP_COMMAND_KEY", None)
         if not keys:
             keys = ["Escape", "Escape"]
-
-        # Ensure keys are always in a list for the loop.
         if not isinstance(keys, list):
             keys = [keys]
 
-        # Retry loop to handle potential `StaleElementReferenceException`, which can happen
-        # if the page structure changes while the command is running.
         for attempt in range(3):
             try:
-                # Loop through the configured keys and dispatch a keydown event for each.
                 for i, key in enumerate(keys):
                     script = f"""
                     var evt = new KeyboardEvent('keydown', {{
@@ -250,16 +273,17 @@ class OmegleHandler:
                     }});
                     document.dispatchEvent(evt);
                     """
-                    # Execute the JavaScript in a separate thread.
                     await asyncio.to_thread(self.driver.execute_script, script)
                     logger.info(f"Selenium: Sent {key} key event to page.")
                     if i < len(keys) - 1:
-                        await asyncio.sleep(1) # Wait between key presses if multiple are configured.
-                return True  # Success, exit the function.
+                        await asyncio.sleep(1)
+                
+                return True
+            
             except StaleElementReferenceException:
-                logger.warning(f"StaleElementReferenceException on attempt {attempt + 1}. Retrying...")
+                logger.warning(f"StaleElementReferenceException on skip attempt {attempt + 1}. Retrying...")
                 await asyncio.sleep(0.5)
-                continue  # Retry the operation.
+                continue
             except Exception as e:
                 logger.error(f"Selenium custom skip failed: {e}")
                 if ctx: await ctx.send("Failed to execute skip command in browser.")
@@ -272,15 +296,39 @@ class OmegleHandler:
     @require_healthy_driver
     async def refresh(self, ctx: Optional[Union[commands.Context, discord.Message, discord.Interaction]] = None) -> bool:
         """
-        Executes a "refresh" action by sending the Escape key 4 times in rapid succession.
-        This can be used to exit menus or reset the state on the target page.
-        
-        Returns:
-            True if successful, False otherwise.
+        Executes a "refresh" action. It first ensures the browser is on the correct URL,
+        then sends the Escape key 4 times to reset the state on the target page.
         """
-        for attempt in range(3): # Add retry loop for robustness
+        # --- URL Verification & Redirect (Runs for all calls) ---
+        try:
+            current_url = await asyncio.to_thread(lambda: self.driver.current_url)
+
+            if self.config.OMEGLE_VIDEO_URL not in current_url:
+                logger.warning(f"URL Mismatch: Not on video page (Currently at: {current_url}). Redirecting before refresh.")
+                if ctx:
+                    msg_content = "Browser is on the wrong page. Redirecting to the stream now..."
+                    if isinstance(ctx, discord.Interaction):
+                        if ctx.response.is_done(): await ctx.followup.send(msg_content, delete_after=10)
+                        else: await ctx.response.send_message(msg_content, delete_after=10)
+                    elif hasattr(ctx, 'send'):
+                        await ctx.send(msg_content, delete_after=10)
+                await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
+                await asyncio.sleep(2.0)
+
+        except Exception as e:
+            logger.error(f"Failed during pre-refresh URL check/redirect: {e}", exc_info=True)
+            if ctx:
+                error_msg = "Error checking browser URL. The browser may be unresponsive."
+                if isinstance(ctx, discord.Interaction):
+                    if ctx.response.is_done(): await ctx.followup.send(error_msg)
+                    else: await ctx.response.send_message(error_msg)
+                elif hasattr(ctx, 'send'):
+                    await ctx.send(error_msg)
+            return False
+
+        # --- Standard Refresh Logic ---
+        for attempt in range(3):
             try:
-                # Loop 4 times to send the Escape key press.
                 for i in range(4):
                     script = f"""
                     var evt = new KeyboardEvent('keydown', {{
@@ -288,18 +336,17 @@ class OmegleHandler:
                     }});
                     document.dispatchEvent(evt);
                     """
-                    # Execute the JavaScript in a separate thread.
                     await asyncio.to_thread(self.driver.execute_script, script)
                     logger.info(f"Selenium: Sent Escape key event to page (press {i+1}/4).")
-                    if i < 3: # Only sleep between presses
-                        await asyncio.sleep(0.1) # Short delay for rapid succession.
+                    if i < 3:
+                        await asyncio.sleep(0.1)
                 
                 logger.info("Selenium: Successfully sent 4 escape key presses for refresh command.")
-                return True # Success
+                return True
             except StaleElementReferenceException:
                 logger.warning(f"StaleElementReferenceException on refresh attempt {attempt + 1}. Retrying...")
                 await asyncio.sleep(0.5)
-                continue # Retry the operation.
+                continue
             except Exception as e:
                 logger.error(f"Selenium refresh (escape key press) failed: {e}")
                 if ctx:
@@ -320,3 +367,75 @@ class OmegleHandler:
             elif hasattr(ctx, 'send'):
                 await ctx.send(error_msg)
         return False
+
+    async def check_for_ban(self) -> None:
+        """
+        [NEW] A passive, periodic check for the browser's URL to manage the bot's ban state.
+        It does not navigate or alter the browser state, only reads it.
+        """
+        if not await self.is_healthy():
+            # Don't log here to avoid spam; the require_healthy_driver decorator on commands will handle notifications.
+            return
+
+        try:
+            current_url = await asyncio.to_thread(lambda: self.driver.current_url)
+
+            # --- BAN DETECTION ---
+            # If we see a ban URL and our state is currently unbanned, we've just been banned.
+            if "/ban/" in current_url and not self.state.is_banned:
+                logger.warning(f"Proactive ban check detected a ban! URL: {current_url}.")
+                self.state.is_banned = True # Set state to prevent re-announcements.
+                try:
+                    chat_channel = self.bot.get_channel(self.config.CHAT_CHANNEL_ID)
+                    if chat_channel:
+                        message = (
+                            f"@here The Streaming VC Bot just got banned on Omegle - Wait for Host OR use this URL in your browser to pay "
+                            f"for an unban - Afterwards, just !skip and it should be unbanned!\n"
+                            f"{current_url}"
+                        )
+                        ban_msg = await chat_channel.send(message)
+                        self.state.ban_message_id = ban_msg.id # Store the message ID to delete it later
+                        logger.info(f"Sent ban notification (ID: {ban_msg.id}) to channel ID {self.config.CHAT_CHANNEL_ID}.")
+                except Exception as e:
+                    logger.error(f"Failed to send ban notification: {e}")
+
+            # --- UNBAN DETECTION ---
+            # If we see the main video URL and our state is currently banned, we've just been unbanned.
+            elif self.config.OMEGLE_VIDEO_URL in current_url and self.state.is_banned:
+                logger.info("Proactive check detected the main video page. Resetting bot's banned state and announcing.")
+                self.state.is_banned = False
+                try:
+                    chat_channel = self.bot.get_channel(self.config.CHAT_CHANNEL_ID)
+                    if chat_channel:
+                        # Delete the old ban message
+                        if self.state.ban_message_id:
+                            try:
+                                old_ban_msg = await chat_channel.fetch_message(self.state.ban_message_id)
+                                await old_ban_msg.delete()
+                                logger.info(f"Successfully deleted old ban message (ID: {self.state.ban_message_id}).")
+                            except discord.NotFound:
+                                logger.warning("Tried to delete old ban message, but it was already gone.")
+                            finally:
+                                self.state.ban_message_id = None
+                        
+                        message = (
+                            f"@here We are now unbanned on Omegle! Feel free to rejoin the <#{self.config.STREAMING_VC_ID}> VC!"
+                        )
+                        await chat_channel.send(message)
+                        logger.info(f"Sent proactive unbanned notification to channel ID {self.config.CHAT_CHANNEL_ID}.")
+                except Exception as e:
+                    logger.error(f"Failed to send proactive unbanned notification: {e}")
+
+        except UnexpectedAlertPresentException:
+            try:
+                def handle_alert():
+                    alert = self.driver.switch_to.alert
+                    alert_text = alert.text
+                    alert.dismiss()
+                    return alert_text
+                alert_text = await asyncio.to_thread(handle_alert)
+                logger.warning(f"Handled and dismissed an unexpected browser alert. Text: '{alert_text}'")
+            except Exception as alert_e:
+                logger.error(f"Tried to handle an unexpected alert, but failed: {alert_e}")
+        except Exception as e:
+            logger.error(f"Error during passive ban check: {e}")

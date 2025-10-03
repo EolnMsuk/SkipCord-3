@@ -84,15 +84,17 @@ if missing_settings:
 
 # Initialize the bot's state management object
 state = BotState(config=bot_config)
-# Initialize the handler for Selenium-based browser automation
-omegle_handler = OmegleHandler(bot_config)
-omegle_handler.state = state
 
 # Initialize the Discord bot instance with required intents
 intents = discord.Intents.default()
 intents.message_content = True  # Required for reading message content
 intents.members = True          # Required for tracking member updates (joins, roles, etc.)
 bot = commands.Bot(command_prefix="!", help_command=None, intents=intents)
+
+# Initialize the handler for Selenium-based browser automation
+omegle_handler = OmegleHandler(bot, bot_config)
+omegle_handler.state = state
+
 bot.state = state # Attach the state object to the bot instance for global access in cogs/decorators
 bot.voice_client_music = None # Will hold the music voice client instance
 
@@ -256,6 +258,19 @@ async def periodic_geometry_save():
                     if state.window_size != size or state.window_position != position:
                         state.window_size = size
                         state.window_position = position
+
+@tasks.loop(seconds=31)
+async def check_ban_status_task():
+    """Periodically checks if the Omegle browser has been banned."""
+    if not state.omegle_enabled or not omegle_handler:
+        return
+    
+    # The handler's methods are decorated to ensure the driver is healthy before running.
+    await omegle_handler.check_for_ban()
+
+@check_ban_status_task.before_loop
+async def before_check_ban_status_task():
+    await bot.wait_until_ready()
 
 #########################################
 # Voice Connection & Hotkey Functions
@@ -510,13 +525,23 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
             logger.info(f"Processing as a stream: {song_display_name}")
             single_song_ydl_opts = YDL_OPTIONS.copy()
             single_song_ydl_opts['extract_flat'] = False
+            info = None # Initialize info to None
 
-            with yt_dlp.YoutubeDL(single_song_ydl_opts) as ydl:
-                logger.debug(f"Executing yt-dlp extract_info for: {song_path_or_url}")
-                info = await asyncio.to_thread(ydl.extract_info, song_path_or_url, download=False)
-                
-            if 'entries' in info and info['entries']:
+            try:
+                with yt_dlp.YoutubeDL(single_song_ydl_opts) as ydl:
+                    logger.debug(f"Executing yt-dlp extract_info for: {song_path_or_url}")
+                    info = await asyncio.to_thread(ydl.extract_info, song_path_or_url, download=False)
+            except Exception as ydl_error:
+                # This will catch errors specifically from yt-dlp and log them.
+                logger.error(f"yt-dlp failed to extract info for {song_path_or_url}: {ydl_error}", exc_info=True)
+                raise ValueError("yt-dlp extraction failed.") # Raise a new error to be caught by the main handler
+
+            if info and 'entries' in info and info['entries']:
                 info = info['entries'][0]
+            
+            # Check if info dictionary exists before trying to access it
+            if not info:
+                raise ValueError("yt-dlp returned no information for the URL.")
 
             audio_url = info.get('url')
             if not audio_url:
@@ -637,38 +662,70 @@ async def play_next_song(error=None, is_recursive_call=False):
 
     # Lock to safely read and modify the queue state
     async with state.music_lock:
-        # NEW PRIORITY-BASED SONG SELECTION
-        if state.music_mode == 'loop' and state.current_song:
+        # --- NEW PRIORITY-BASED SONG SELECTION ---
+
+        # Priority 0: Manual override from commands like !q
+        if state.play_next_override:
+            logger.info("Manual override from !q detected. Playing next song in queue.")
+            if state.search_queue:
+                song_to_play_info = state.search_queue.pop(0)
+            elif state.active_playlist: # Fallback in case search queue is empty but override was set
+                song_to_play_info = state.active_playlist.pop(0)
+            # IMPORTANT: Reset the flag after using it.
+            state.play_next_override = False
+        
+        # Priority 1: Loop mode always repeats the current song.
+        elif state.music_mode == 'loop' and state.current_song:
             song_to_play_info = state.current_song
             logger.info("Looping current song.")
-        elif state.search_queue:
-            song_to_play_info = state.search_queue.pop(0)
-            logger.info(f"Playing next from user search queue: {song_to_play_info.get('title')}")
-        elif state.active_playlist:
-            song_to_play_info = state.active_playlist.pop(0)
-            logger.info(f"Playing next from active playlist: {song_to_play_info.get('title')}")
+        
         else:
-            if state.music_mode == 'shuffle':
+            # Combine user-added queues to process them
+            user_queue = state.active_playlist + state.search_queue
+
+            if user_queue:
+                # Priority 2: Process the user-added queue based on the current mode.
+                if state.music_mode == 'shuffle':
+                    logger.info("Shuffle mode active. Picking a random song from the user queue.")
+                    len_active = len(state.active_playlist)
+                    chosen_index = random.randrange(len(user_queue))
+                    if chosen_index < len_active:
+                        song_to_play_info = state.active_playlist.pop(chosen_index)
+                    else:
+                        song_to_play_info = state.search_queue.pop(chosen_index - len_active)
+
+                elif state.music_mode == 'alphabetical':
+                    logger.info("Alphabetical mode active. Picking the next song by title from the user queue.")
+                    sorted_queue = sorted(user_queue, key=lambda s: s.get('title', '').lower())
+                    song_to_play_info = sorted_queue[0]
+                    
+                    # Remove the chosen song from its original list to prevent re-playing
+                    try:
+                        state.active_playlist.remove(song_to_play_info)
+                    except ValueError:
+                        try:
+                            state.search_queue.remove(song_to_play_info)
+                        except ValueError:
+                            logger.error("Consistency error: Could not find the alphabetically chosen song in any queue to remove it.")
+                            song_to_play_info = None
+                
+                else: # Default FIFO behavior if mode is not shuffle, alphabetical, or loop
+                    if state.search_queue:
+                        song_to_play_info = state.search_queue.pop(0)
+                        logger.info(f"Playing next from user search queue (FIFO): {song_to_play_info.get('title')}")
+                    elif state.active_playlist:
+                        song_to_play_info = state.active_playlist.pop(0)
+                        logger.info(f"Playing next from active playlist (FIFO): {song_to_play_info.get('title')}")
+            
+            # Priority 3: Fallback to the local library if the user queue is empty.
+            if not song_to_play_info:
                 if not state.shuffle_queue:
                     needs_library_scan = True
                 else:
                     song_path = state.shuffle_queue.pop(0)
                     display_title = get_display_title_from_path(song_path)
                     song_to_play_info = {'path': song_path, 'title': display_title, 'is_stream': False}
-                    logger.info(f"Playing next from local library (Shuffle): {display_title}")
-            elif state.music_mode == 'alphabetical':
-                if not state.all_songs:
-                    needs_library_scan = True
-                else:
-                    last_played_path = state.current_song.get('path') if state.current_song else None
-                    try: 
-                        next_index = (state.all_songs.index(last_played_path) + 1) % len(state.all_songs)
-                    except (ValueError, AttributeError): 
-                        next_index = 0
-                    song_path = state.all_songs[next_index]
-                    display_title = get_display_title_from_path(song_path)
-                    song_to_play_info = {'path': song_path, 'title': display_title, 'is_stream': False}
-                    logger.info(f"Playing next from local library (Alphabetical): {display_title}")
+                    logger.info(f"Playing next from local library (Default Shuffle): {display_title}")
 
     # Handle library scan outside the lock
     if needs_library_scan:
@@ -979,6 +1036,8 @@ async def on_ready() -> None:
         if not timeout_unauthorized_users_task.is_running(): timeout_unauthorized_users_task.start()
         if not periodic_geometry_save.is_running(): periodic_geometry_save.start()
         if not music_playback_watchdog.is_running(): music_playback_watchdog.start()
+        if not check_ban_status_task.is_running():
+            check_ban_status_task.start()
         
         if not daily_auto_stats_clear.is_running():
             daily_auto_stats_clear.start()
@@ -1180,21 +1239,21 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                         except Exception as e:
                             logger.error(f"Failed to auto-unmute '{member.display_name}': {e}")
 
-    # --- NEW: Auto Skip/Refresh Logic ---
+    # --- Auto Skip/Refresh Logic ---
     is_relevant_event = was_in_streaming_vc or is_now_in_streaming_vc
-    if is_relevant_event and state.omegle_enabled:
+    if is_relevant_event and state.omegle_enabled and not state.is_banned:
         
-        # Calculate the number of users with camera on AFTER the event.
+        # Calculate the number of users with camera on AFTER the event, excluding allowed users.
         if is_now_in_streaming_vc:
             cam_users_after_count = len([
                 m for m in after.channel.members
-                if m.voice and m.voice.self_video and m.id not in bot_config.ALLOWED_USERS and not m.bot
+                if m.voice and m.voice.self_video and not m.bot and m.id not in bot_config.ALLOWED_USERS
             ])
         elif was_in_streaming_vc and not is_now_in_streaming_vc:
             # User left, count remaining members in the 'before' channel.
             cam_users_after_count = len([
                 m for m in before.channel.members
-                if m.voice and m.voice.self_video and m.id not in bot_config.ALLOWED_USERS and not m.bot
+                if m.voice and m.voice.self_video and not m.bot and m.id not in bot_config.ALLOWED_USERS
             ])
         else:
             cam_users_after_count = 0
@@ -1207,10 +1266,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
         # Calculate the number of users with camera on BEFORE the event by adjusting the 'after' count.
         cam_users_before_count = cam_users_after_count
-        if camera_turned_on or joined_with_cam:
-            cam_users_before_count -= 1
-        elif camera_turned_off or left_with_cam:
-            cam_users_before_count += 1
+        if member.id not in bot_config.ALLOWED_USERS:
+            if camera_turned_on or joined_with_cam:
+                cam_users_before_count -= 1
+            elif camera_turned_off or left_with_cam:
+                cam_users_before_count += 1
         
         # Ensure count is not negative (shouldn't happen, but good practice).
         cam_users_before_count = max(0, cam_users_before_count)
@@ -1227,16 +1287,13 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
         # --- Auto !refresh logic (last cam user leaves/turns cam off) ---
         if bot_config.EMPTY_VC_PAUSE and cam_users_before_count > 0 and cam_users_after_count == 0:
-            # This condition is met when the count drops to zero. We also check that the specific event
-            # was a user who had their camera on leaving or turning it off, as requested.
-            if left_with_cam or camera_turned_off:
-                logger.info(f"Auto Refresh: Last camera user left/turned cam off. Before: {cam_users_before_count}, After: 0.")
-                await omegle_handler.refresh()
-                if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
-                    try:
-                        await command_channel.send("Stream automatically paused")
-                    except Exception as e:
-                        logger.error(f"Failed to send auto-refresh notification: {e}")
+            logger.info(f"Auto Refresh: Last camera user left/turned cam off. Before: {cam_users_before_count}, After: 0.")
+            await omegle_handler.refresh()
+            if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
+                try:
+                    await command_channel.send("Stream automatically paused")
+                except Exception as e:
+                    logger.error(f"Failed to send auto-refresh notification: {e}")
 
 
     if after.channel and after.channel.id == bot_config.PUNISHMENT_VC_ID:
@@ -1425,10 +1482,12 @@ async def daily_auto_stats_clear() -> None:
 
     report_sent_successfully = False
     try:
-        await helper.show_analytics_report(channel)
+        # This line has been changed to show the times report instead of the full stats report.
+        await helper.show_times_report(channel)
         report_sent_successfully = True
     except Exception as e:
-        logger.error(f"Daily auto-stats failed during 'show_analytics_report': {e}", exc_info=True)
+        # The error log is also updated for accuracy.
+        logger.error(f"Daily auto-stats failed during 'show_times_report': {e}", exc_info=True)
         try:
             await channel.send("⚠️ **Critical Error:** Failed to generate the daily stats report. **Statistics will NOT be cleared.** Please check the logs.")
         except Exception as e_inner:
@@ -1904,8 +1963,20 @@ async def msearch(ctx, *, query: str):
                 results = sp.album_tracks(clean_query)
                 if results: tracks_to_search.extend(results['items'])
             elif '/playlist/' in clean_query:
+                # Get the first page of tracks
                 results = sp.playlist_tracks(clean_query)
-                if results: tracks_to_search.extend(item['track'] for item in results['items'] if item['track'])
+                if results:
+                    # Loop as long as there are more pages of tracks
+                    while results:
+                        # Add the tracks from the current page
+                        tracks_to_search.extend(item['track'] for item in results['items'] if item['track'])
+                        # Check if there is a next page and fetch it
+                        if results['next']:
+                            # The sp.next() function is a helper that gets the next page of results
+                            results = sp.next(results)
+                        else:
+                            # If there is no next page, exit the loop
+                            results = None
             
             if not tracks_to_search:
                 raise ValueError("Could not retrieve any tracks from the Spotify URL.")

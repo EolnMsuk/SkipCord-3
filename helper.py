@@ -4,6 +4,7 @@
 
 import asyncio
 import discord
+import math
 import os
 import time
 from datetime import datetime, timezone, timedelta
@@ -479,8 +480,13 @@ class BotHelper:
             embed.set_author(name=member.name, icon_url=member.display_avatar.url)
             embed.set_thumbnail(url=member.display_avatar.url)
 
-            if member.banner:
-                embed.set_image(url=member.banner.url)
+            try:
+                # Fetch the full user object specifically to get banner information
+                user_obj = await self.bot.fetch_user(member.id)
+                if user_obj and user_obj.banner:
+                    embed.set_image(url=user_obj.banner.url)
+            except Exception as e:
+                 logger.warning(f"Could not fetch banner for new member {member.name}: {e}")
 
             embed.add_field(
                 name="Account Age",
@@ -595,7 +601,7 @@ class BotHelper:
             if user_obj.banner: embed.set_image(url=user_obj.banner.url)
         except Exception: pass
 
-        embed.add_field(name="Original Duration", value=duration_str, inline=True)
+        embed.add_field(name="Duration", value=duration_str, inline=True)
 
         if "manually removed by" in reason.lower() or "Timeout removed by" in reason:
             try:
@@ -921,8 +927,8 @@ class BotHelper:
             "`!times` - Shows top VC users by time.\n"
             "`!mskip` - Skips the current song.\n"
             "`!mpp` - Toggles music play and pause.\n"
-            "`!vol <level>` - Sets music volume (0-100).\n"
-            "`!m <query>` - Searches for songs/URLs.\n"
+            "`!vol 1-100` - Sets music volume (0-100).\n"
+            "`!m songname` - Searches for songs/URLs.\n"
             "`!mclear` - Clears all songs from the search queue.\n"
             "`!mshuffle` - Cycles music mode (Shuffle -> Alphabetical -> Loop).\n"
             "`!np` - Shows currently playing song.\n"
@@ -1377,18 +1383,31 @@ class BotHelper:
             sorted_users = sorted(combined_data.items(), key=lambda item: item[1].get("total_time", 0), reverse=True)[:10]
             return total_time_all_users, sorted_users
 
+        # First, calculate all necessary statistics before sending any messages
         total_tracking_seconds = 0
         async with self.state.vc_lock:
-            if self.state.vc_time_data:
-                all_sessions = [s["start"] for d in self.state.vc_time_data.values() for s in d.get("sessions", [])]
-                if all_sessions:
-                    total_tracking_seconds = time.time() - min(all_sessions)
-
-        tracking_time_str = format_duration(total_tracking_seconds)
-        await destination.send(f"⏳ **Tracking Started:** {tracking_time_str} ago\n")
+            all_start_times = [s["start"] for d in self.state.vc_time_data.values() for s in d.get("sessions", []) if "start" in s]
+            all_start_times.extend(self.state.active_vc_sessions.values())
+            if all_start_times:
+                total_tracking_seconds = time.time() - min(all_start_times)
 
         total_time_all_users, top_vc_users = await get_vc_time_data()
 
+        average_user_count = 0
+        if total_tracking_seconds > 60:
+            average_user_count = round(total_time_all_users / total_tracking_seconds)
+
+        # Now, send the report in the desired order
+        
+        # 1. Send Tracking Started and Average User Count
+        header_lines = []
+        tracking_time_str = format_duration(total_tracking_seconds)
+        header_lines.append(f"⏳ **Tracking Started:** {tracking_time_str} ago")
+        if average_user_count > 0:
+            header_lines.append(f"👥 **Average User Count:** {average_user_count}")
+        await destination.send("\n".join(header_lines))
+
+        # 2. Send the Top 10 VC Members list
         if top_vc_users:
             async def process_vc_entry(entry):
                 uid, data = entry
@@ -1399,9 +1418,12 @@ class BotHelper:
             processed_entries = await asyncio.gather(*(process_vc_entry(entry) for entry in top_vc_users))
             for chunk in create_message_chunks(processed_entries, "🏆 Top 10 VC Members", lambda x: x, 10, as_embed=True, embed_color=discord.Color.gold()):
                 await destination.send(embed=chunk)
-        else: await destination.send("No VC time data available yet.")
+        else: 
+            await destination.send("No VC time data available yet.")
 
-        total_time_str = format_duration(total_time_all_users)
+        # 3. Send the Total VC Time at the end
+        total_hours = math.ceil(total_time_all_users / 3600)
+        total_time_str = f"{total_hours} hours"
         await destination.send(f"⏱ **Total VC Time (All Users):** {total_time_str}")
 
     @handle_errors
@@ -1695,7 +1717,7 @@ class BotHelper:
                     status_lines.append(f"**Queue:** {len(queue)} song(s)")
 
             description = f"""
-**!m <song or URL>** ----- Find/queue a song
+**!m song or URL** -------- Find/queue a song
 **!q** ---------------------- View the queue
 **!np** --------------------- Show current song
 **!mclear** ---------------- Clear the Playlist
