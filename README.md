@@ -2,10 +2,10 @@
 
 SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who use Omegle or similar platforms. It seamlessly integrates a shared streaming experience into a Discord voice channel, empowering the audience with control through a clean, interactive button menu. The bot features advanced moderation, detailed logging, automated rule enforcement, and a complete music system, all built on a fully asynchronous architecture for rock-solid performance.
 
-- [Key Features](#-key-features)
-- [Commands](#-command-list)
-- [Installation](#%EF%B8%8F-setup--configuration)
-- [Donations](#donations)
+  - [Key Features](https://www.google.com/search?q=%23-key-features)
+  - [Commands](https://www.google.com/search?q=%23-command-list)
+  - [Installation](https://www.google.com/search?q=%23%25EF%25B8%258F-setup--configuration)
+  - [Donations](https://www.google.com/search?q=%23donations)
 
 -----
 
@@ -13,12 +13,12 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 
 ### 🌐 Interactive Stream Control
 
-* **Intuitive Button Menus**: Users control the stream (`!skip`, `!info`) and music (`!mskip`, `!mpauseplay`) with persistent button menus that periodically refresh.
-* **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine.
-* **Auto-Start**: Automatically starts the stream by running `!skip` as soon as the first user joins the streaming VC with their camera on.
-* **Auto-Pause**: Intelligently runs the !refresh / pause command *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth.
+  * **Intuitive Button Menus**: Users control the stream (`!skip`, `!info`) and music (`!mskip`, `!mpauseplay`) with persistent button menus that periodically refresh.
+  * **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine.
+  * **Auto-Start**: Automatically starts the stream by running `!skip` as soon as the first user joins the streaming VC with their camera on.
+  * **Auto-Pause**: Intelligently runs the \!refresh / pause command *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth.
 
-<img width="378" height="201" alt="omegle" src="https://github.com/user-attachments/assets/91c01887-b196-46c3-892c-03b6eb383f38" />
+<img width="378" height="201" alt="1" src="https://github.com/user-attachments/assets/dad5b1a0-7cc6-4b4b-9e1b-b1b7c96b52ff" />
 
 ### 🛡️ Advanced Moderation & Automation
 
@@ -27,7 +27,7 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
   * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
   * **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`.
 
-<img width="1271" height="538" alt="console" src="https://github.com/user-attachments/assets/58125182-849d-4392-ae15-e561b5f4e8fa" />
+<img width="1271" height="538" alt="2" src="https://github.com/user-attachments/assets/3c6de1af-c9a7-4474-a498-dbeaf4af19de" />
 
 ### 🎵 Integrated Music System
 
@@ -37,14 +37,14 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
   * **Multiple Playback Modes**: Effortlessly cycle between **Shuffle**, **Alphabetical**, and **Loop** modes.
   * **Automatic Management**: The bot joins the VC when users with cameras are present and leaves when it's empty to conserve resources.
 
-<img width="420" height="282" alt="panel" src="https://github.com/user-attachments/assets/8a10d47b-067c-4034-8a9a-7ca8ef1c2baf" />
+<img width="420" height="282" alt="3" src="https://github.com/user-attachments/assets/e54fe401-1d86-4d06-8772-b966b38b3b75" />
 
 ### 📊 Persistent State & Analytics
 
   * **State Persistence**: All critical data—stats, violations, timeouts, event history, and playlists—is saved to `data.json` and reloaded on startup, ensuring no data is lost after a crash or restart.
   * **VC Time Tracking**: Tracks the cumulative time users spend in moderated voice channels, with daily leaderboards available via the `!times` command.
 
-<img width="376" height="322" alt="times" src="https://github.com/user-attachments/assets/4592939a-167f-4dcd-b6d4-c5d8b9ac0aa3" />
+<img width="376" height="322" alt="4" src="https://github.com/user-attachments/assets/f214d515-b9a3-4995-b2a1-bfbaf204e3b0" />
 
 ### 🔔 Comprehensive Event Notifications
 
@@ -52,9 +52,9 @@ The bot keeps administrators informed with a robust, event-driven notification s
 
   * **Member Activity**: Joins, Leaves (batched for mass departures), Kicks, Bans, and Unbans.
   * **Moderation Actions**: Timeouts Added/Removed and Role Changes.
-  * **Bot & Stream Status**: Bot Online, Stream Auto-Pause, and Browser Health notifications.
+  * **Bot & Stream Status**: Bot Online, Stream Auto-Pause, Browser Health, and Omegle Ban/Unban status notifications.
 
-<img width="445" height="493" alt="notifiy" src="https://github.com/user-attachments/assets/6257f651-fde3-4cd7-8e91-f0c6d26ebdca" />
+<img width="445" height="493" alt="5" src="https://github.com/user-attachments/assets/ede4dc10-f7fd-47d8-b228-ce8bd46a90ec" />
 
 -----
 
@@ -129,7 +129,6 @@ The bot keeps administrators informed with a robust, event-driven notification s
   * **Python 3.9+**: Install from [python.org](https://www.python.org/downloads/). Make sure to check **"Add Python to PATH"** during installation.
   * **FFmpeg**: Required for music playback. Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to your system's PATH.
   * **Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
-
     ```
     pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spotipy pyautogui
     ```
@@ -158,16 +157,14 @@ To enable playing songs, albums, and playlists from Spotify links, you need API 
 ### 4\. File Setup
 
 1.  Create a folder for your bot and place all the provided Python files (`bot.py`, `helper.py`, `omegle.py`, `tools.py`) inside.
-
+2.  Create a new file in the same folder named `.env` (note the leading dot).
 3.  Open the `.env` file and add your credentials in the following format. Replace the placeholder text with the actual values you copied.
-
     ```env
     # .env file
     BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
     SPOTIPY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID_HERE
     SPOTIPY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET_HERE
     ```
-
     > **Note:** If you are not setting up Spotify, you can leave the `SPOTIPY` lines blank, but the `BOT_TOKEN` is required.
 
 ### 5\. Configure `config.py`
@@ -181,9 +178,11 @@ COMMAND_CHANNEL_ID = 123456789012345678      # Channel for bot commands and menu
 CHAT_CHANNEL_ID = 123456789012345678         # Channel for join/leave/ban notifications
 STREAMING_VC_ID = 123456789012345678         # Main streaming/music voice channel
 PUNISHMENT_VC_ID = 123456789012345678        # VC where users are moved for a first violation
-OMEGLE_VIDEO_URL = "https://uhmegle.com/video"     # URL for the streaming website
+OMEGLE_VIDEO_URL = "https://omegle.com/video"     # URL for the streaming website
 # Go to edge://version/ in edge and copy the "Profile path" without the "Default" at the end.
 EDGE_USER_DATA_DIR = "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data/Profile 2/"
+# (Optional) Manually specify path to msedgedriver.exe if auto-detection fails
+EDGE_DRIVER_PATH = None
 
 # --- PERMISSIONS ---
 ALLOWED_USERS = {123456789012345678, 987654321098765432} # User IDs with full bot access
@@ -232,17 +231,16 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
 
 1.  **Important**: Close all running instances of the Microsoft Edge browser.
 2.  Open your command prompt, navigate to the bot's folder (`cd path/to/your/bot`), and run the bot:
-
     ```
     python bot.py
     ```
-4.  The bot should now Automatically launch Edge, navigate to your configured URL, and initialize all systems.
+3.  The bot should now Automatically launch Edge, navigate to your configured URL, and initialize all systems.
 
 ### Troubleshooting
 
   * **Token Error**: Ensure your `.env` file is correctly named (it must be `.env`, not `env.txt`), is in the same folder as `bot.py`, and contains the correct Discord bot token.
   * **Edge Won't Launch**: Double-check that the `EDGE_USER_DATA_DIR` path in `config.py` is absolutely correct and matches your system.
-  * **"WebDriver" Error**: Make sure your Edge browser is fully updated. Selenium's automatic driver management requires an up-to-date browser.
+  * **"WebDriver" Error**: Make sure your Edge browser is fully updated. If automatic detection fails, you can manually download the correct `msedgedriver.exe` for your Edge version and specify its path in `config.py` via the `EDGE_DRIVER_PATH` setting.
   * **Music Doesn't Play**: Confirm that **FFmpeg** is installed and its location is included in your system's PATH environment variable.
   * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct and have no extra spaces.
   * **Other Issues**: Check the `bot.log` file in the bot's folder for detailed error messages.
@@ -251,5 +249,5 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
 
 ### Donations
 
-  * **CashApp:** `$eolnmsuk` 
+  * **CashApp:** `$eolnmsuk`
   * **Bitcoin:** `bc1quhcdu2lry5cyg44suee7lut7tawp5y82sw7a2e`
