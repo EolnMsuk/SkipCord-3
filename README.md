@@ -2,7 +2,7 @@
 
 SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who use Omegle or similar platforms. It seamlessly integrates a shared streaming experience into a Discord voice channel, empowering the audience with control through a clean, interactive button menu. The bot features advanced moderation, detailed logging, automated rule enforcement, and a complete music system, all built on a fully asynchronous architecture for rock-solid performance.
 
-  - [Key Features](##-key-features)
+  - [Key Features](##key-features)
   - [Commands](#command-list)
   - [Installation](https://www.google.com/search?q=%23%25EF%25B8%258F-setup--configuration)
   - [Donations](https://www.google.com/search?q=%23donations)
