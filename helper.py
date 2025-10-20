@@ -828,8 +828,8 @@ class BotHelper:
             help_description = """
 **Pause** --------- Pause Omegle
 **Skip** ----------- Skip/Start Omegle
-**Report** -------- Report Current User
-**Top 10** --------- Top 10 VC Times
+**Info** ----------- Shows Server Info
+**Report** -------- Report Omegle User
 **!commands** --- List All Commands
 """
             embed = discord.Embed(title="👤  Omegle Controls  👤", description=help_description, color=discord.Color.blue())

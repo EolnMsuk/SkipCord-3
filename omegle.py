@@ -8,7 +8,7 @@ import os
 import re
 import base64
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from typing import Optional, Union, List, Tuple
 
@@ -281,7 +281,7 @@ class OmegleHandler:
                 # --- End of new block ---
 
                 # --- Set Volume ---
-                await self._set_volume()
+                # await self._set_volume() # <-- REDUNDANT CALL REMOVED
 
                 # Reset relay flag and attempt to send on startup
                 if self.state:
@@ -611,6 +611,35 @@ class OmegleHandler:
             if "/ban/" in current_url and not self.state.is_banned:
                 logger.warning(f"Proactive ban check detected a ban! URL: {current_url}.")
 
+                # --- [NEW] Log users in streaming VC to ban.log ---
+                try:
+                    guild = self.bot.get_guild(self.config.GUILD_ID)
+                    if guild:
+                        streaming_vc = guild.get_channel(self.config.STREAMING_VC_ID)
+                        members_in_vc = streaming_vc.members if streaming_vc else []
+                        
+                        ban_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                        # Use .bind(BAN_LOG=True) to tag these messages for the ban.log filter
+                        logger.bind(BAN_LOG=True).info(f"--- BAN DETECTED at {ban_time} ---")
+                        
+                        human_members = [m for m in members_in_vc if not m.bot]
+                        
+                        if human_members:
+                            logger.bind(BAN_LOG=True).info(f"Users in streaming VC ({streaming_vc.name}):")
+                            for member in human_members:
+                                # Log each user's details
+                                logger.bind(BAN_LOG=True).info(f"  - UserID: {member.id:<20} | Username: {member.name:<32} | DisplayName: {member.display_name}")
+                        else:
+                            logger.bind(BAN_LOG=True).info("Streaming VC was empty of users at the time of the ban.")
+                        
+                        logger.bind(BAN_LOG=True).info("--- END OF BAN REPORT ---")
+                    else:
+                        logger.error("Could not get guild to log users for ban report.")
+                except Exception as ban_log_e:
+                    # Log to the main bot.log if the ban.log fails for any reason
+                    logger.error(f"Failed to write to ban.log: {ban_log_e}", exc_info=True)
+                # --- End [NEW] ---
+
                 # --- [MODIFIED] Save and post buffered screenshots ---
                 if self.config.SS_LOCATION and hasattr(self.state, 'ban_screenshots'):
                     saved_filepaths = []
@@ -624,22 +653,11 @@ class OmegleHandler:
                             os.makedirs(self.config.SS_LOCATION, exist_ok=True)
                             ban_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                             
-                            # Get VC usernames for filename
-                            vc_usernames_str = "no-users"
-                            try:
-                                guild = self.bot.get_guild(self.config.GUILD_ID)
-                                if guild:
-                                    streaming_vc = guild.get_channel(self.config.STREAMING_VC_ID)
-                                    if streaming_vc and isinstance(streaming_vc, discord.VoiceChannel):
-                                        # Sanitize names and join
-                                        vc_members = [re.sub(r'[\\/*?:"<>|]', "", m.name) for m in streaming_vc.members if not m.bot]
-                                        if vc_members:
-                                            vc_usernames_str = "-".join(vc_members)
-                            except Exception as e:
-                                logger.error(f"Could not get VC usernames for ban screenshot naming: {e}")
+                            # [REMOVED] Block to get VC usernames to prevent long filenames.
 
                             for i, (capture_time, ss_bytes) in enumerate(screenshots_to_save):
-                                filename = f"ban-{vc_usernames_str}-{ban_timestamp}-{i + 1}.jpg"
+                                # [MODIFIED] Simplified filename
+                                filename = f"ban-{ban_timestamp}-{i + 1}.jpg"
                                 filepath = os.path.join(self.config.SS_LOCATION, filename)
                                 
                                 try:

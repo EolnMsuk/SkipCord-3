@@ -30,6 +30,20 @@ logger.add(sys.stdout, colorize=True, format="<green>{time:MM-DD-YYYY HH:mm:ss}<
 # Add a handler to log to a file, with automatic rotation and compression.
 logger.add("bot.log", rotation="10 MB", compression="zip", enqueue=True, level="INFO")
 
+# --- ADD THIS NEW BLOCK ---
+# Add a handler for the dedicated ban log, with rotation and compression.
+# This filter ensures only messages bound with BAN_LOG=True go here.
+logger.add(
+    "ban.log",
+    rotation="10 MB", 
+    compression="zip", 
+    enqueue=True, 
+    level="INFO", 
+    filter=lambda record: record["extra"].get("BAN_LOG", False),
+    format="<green>{time:MM-DD-YYYY HH:mm:ss}</green> | <level>{message}</level>"
+)
+# --- END OF NEW BLOCK ---
+
 
 def sanitize_channel_name(channel_name: str) -> str:
     """Sanitizes channel names for logging by removing non-ASCII characters."""
