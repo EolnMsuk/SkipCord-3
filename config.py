@@ -39,13 +39,16 @@ STATS_EXCLUDED_USERS = {}
 # If True, the bot will delete any message in the MEDIA_ONLY_CHANNEL_ID that isn't a picture, video, or link.
 MOD_MEDIA = False
 
-# If True, the bot will automatically pause/refresh the Omegle stream when the last user with a camera leaves the STREAMING_VC_ID.
-EMPTY_VC_PAUSE = True
-
 # --- 🌐 BROWSER AUTOMATION (SELENIUM) 🌐 ---
 # These settings control the web browser that runs the Omegle stream.
 # The URL the bot will open. Change only if you use a different Omegle mirror.
 OMEGLE_VIDEO_URL = "https://uhmegle.com/video"
+
+# If True, the bot will automatically pause/refresh the Omegle stream when the last user with a camera leaves the STREAMING_VC_ID.
+EMPTY_VC_PAUSE = True
+
+# If True, the bot will automatically start/skip the Omegle stream when the first user with a camera joins the STREAMING_VC_ID.
+AUTO_VC_START = False
 
 # The FULL path to your Microsoft Edge "Profile" folder. This is crucial for the 
 # browser to remember settings, stay logged into sites, and appear less like a bot.
@@ -170,6 +173,7 @@ GLOBAL_HOTKEY_MVOLDOWN = "["            # The key to trigger the !mvoldown. Uses
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = "]"              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
