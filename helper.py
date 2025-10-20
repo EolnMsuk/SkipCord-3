@@ -8,7 +8,7 @@ import math
 import os
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Callable, Optional, Union, List
+from typing import Any, Callable, Optional, Union, List, Tuple
 
 from discord.ext import commands
 from discord.ui import View, Button
@@ -61,7 +61,7 @@ def create_message_chunks(
         # Ensure process_entry always returns a list of strings
         if not isinstance(processed_list, list):
             processed_list = [processed_list]
-        
+
         for processed in processed_list:
             if processed:
                 entry_length = len(processed) + 1  # +1 for the newline
@@ -92,10 +92,12 @@ async def _button_callback_handler(interaction: discord.Interaction, command: st
     """A generic handler for button presses, including permissions and cooldowns."""
     try:
         user_id = interaction.user.id
+        # Permission Check (Channel)
         if user_id not in bot_config.ALLOWED_USERS and interaction.channel.id != bot_config.COMMAND_CHANNEL_ID:
             await interaction.response.send_message(f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>", ephemeral=True)
             return
 
+        # Cooldown Check
         current_time = time.time()
         async with state.cooldown_lock:
             if user_id in state.button_cooldowns:
@@ -106,26 +108,89 @@ async def _button_callback_handler(interaction: discord.Interaction, command: st
                         await interaction.response.send_message(f"{interaction.user.mention}, wait {int(time_left)}s before using another button.", ephemeral=True)
                         state.button_cooldowns[user_id] = (last_used, True)
                     else:
-                        await interaction.response.defer(ephemeral=True)
+                        # If already warned, just defer silently
+                        try:
+                            await interaction.response.defer(ephemeral=True, thinking=False)
+                        except discord.InteractionResponded:
+                            pass # Already deferred, maybe by another process
                     return
+            # Update cooldown timestamp
             state.button_cooldowns[user_id] = (current_time, False)
 
-        await interaction.response.defer()
+        # Defer first (ephemeral so only user sees "Thinking...")
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        except discord.InteractionResponded:
+             logger.warning("Interaction already responded to before deferral in _button_callback_handler.")
+             pass # Interaction might have already been deferred or responded to
+
+
+        # --- NEW: Send public announcement message ---
+        try:
+            # Construct the announcement message
+            announcement_content = f"{interaction.user.mention} used `{command}`"
+            # Send it to the same channel the button was clicked in
+            await interaction.channel.send(announcement_content)
+            logger.info(f"Announced button use: {interaction.user.name} used {command}")
+        except discord.Forbidden:
+             logger.warning(f"Missing permissions to send announcement message in #{interaction.channel.name}")
+        except Exception as e:
+             logger.error(f"Failed to send button usage announcement: {e}")
+        # --- END NEW ---
+
+
+        # Find and Invoke Command
         cmd_name = command.lstrip("!")
         command_obj = interaction.client.get_command(cmd_name)
         if command_obj:
-            fake_message = await interaction.channel.send(f"{interaction.user.mention} used {command}")
-            fake_message.content = command
-            fake_message.author = interaction.user
-            ctx = await interaction.client.get_context(fake_message)
-            await interaction.client.invoke(ctx)
+            # Create a fake message object that mimics a real command invocation
+            # Send it temporarily so context can be created, then delete it.
+            fake_message = None
+            try:
+                fake_message = await interaction.channel.send(f"Processing {command} for {interaction.user.mention}...")
+                fake_message.content = command
+                fake_message.author = interaction.user
+
+                # Create a new context from the fake message and invoke the command
+                ctx = await interaction.client.get_context(fake_message)
+                await interaction.client.invoke(ctx)
+
+            except Exception as invoke_err:
+                 logger.error(f"Error invoking command '{cmd_name}' from button: {invoke_err}", exc_info=True)
+                 # Try to send an ephemeral follow-up if possible
+                 try:
+                     await interaction.followup.send("An error occurred while running that command.", ephemeral=True)
+                 except Exception:
+                     pass # Ignore if followup fails
+            finally:
+                # Delete the fake message to keep the channel clean
+                if fake_message:
+                    try:
+                        await fake_message.delete()
+                    except discord.NotFound:
+                        pass # Already deleted
+                    except discord.Forbidden:
+                        logger.warning(f"Missing permissions to delete fake message in #{interaction.channel.name}")
         else:
             logger.warning(f"Button tried to invoke non-existent command: {cmd_name}")
-            await interaction.followup.send("Could not process that command.", ephemeral=True)
+            try:
+                await interaction.followup.send("Could not process that command.", ephemeral=True)
+            except Exception:
+                 pass # Ignore if followup fails
+
     except Exception as e:
+        # General error handler for the whole callback
         logger.error(f"Error in button callback: {e}", exc_info=True)
-        if not interaction.response.is_done(): await interaction.response.send_message("An error occurred.", ephemeral=True)
-        else: await interaction.followup.send("An error occurred.", ephemeral=True)
+        try:
+             # Check if we can still send an ephemeral follow-up
+             if interaction.response.is_done():
+                 await interaction.followup.send("An error occurred processing the button click.", ephemeral=True)
+             else:
+                 # If not done, try the initial response
+                 await interaction.response.send_message("An error occurred processing the button click.", ephemeral=True)
+        except Exception as final_err:
+             logger.error(f"Failed to send final error message for button callback: {final_err}")
+
 
 class HelpButton(Button):
     def __init__(self, label: str, emoji: str, command: str, style: discord.ButtonStyle, bot_config: BotConfig, state: BotState):
@@ -144,12 +209,12 @@ class HelpView(View):
         super().__init__(timeout=None)
         # Define buttons with their emoji, label, command, and desired color style
         cmds = [
-            ("⏸️", "👤", "!refresh", discord.ButtonStyle.danger), 
-            ("⏭️", "👤", "!skip", discord.ButtonStyle.success), 
-            ("ℹ️", "👤", "!info", discord.ButtonStyle.primary), 
-            ("⏱️", "👤", "!times", discord.ButtonStyle.secondary) 
+            ("⏸️", "👤", "!refresh", discord.ButtonStyle.danger),
+            ("⏭️", "👤", "!skip", discord.ButtonStyle.success),
+            ("🚩", "👤", "!report", discord.ButtonStyle.primary),
+            ("ℹ️", "👤", "!info", discord.ButtonStyle.secondary)
         ]
-        for e, l, c, s in cmds: 
+        for e, l, c, s in cmds:
             self.add_item(HelpButton(label=l, emoji=e, command=c, style=s, bot_config=bot_config, state=state))
 
 # --- Interactive Queue Components ---
@@ -158,12 +223,12 @@ class QueueDropdown(discord.ui.Select):
         self.bot = bot
         self.state = state
         self.author = author
-        
+
         options = [
             discord.SelectOption(label=f"{i + 1}. {song_info.get('title', 'Unknown Title')}"[:100], value=str(i))
             for i, song_info in page_items
         ]
-        
+
         super().__init__(placeholder="Select a song to jump to...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
@@ -171,9 +236,9 @@ class QueueDropdown(discord.ui.Select):
         if interaction.user != self.author:
             await interaction.response.send_message("You can't control this menu.", ephemeral=True)
             return
-            
+
         selected_index = int(self.values[0])
-        
+
         async with self.state.music_lock:
             full_queue = self.state.active_playlist + self.state.search_queue
             if selected_index >= len(full_queue):
@@ -186,14 +251,14 @@ class QueueDropdown(discord.ui.Select):
 
             # Get the selected song and remove it from its original position in the full queue list
             selected_song = full_queue.pop(selected_index)
-            
+
             # Reconstruct the original queues from the modified full queue
             len_active = len(self.state.active_playlist)
             if selected_index < len_active:
                 self.state.active_playlist.pop(selected_index)
             else:
                 self.state.search_queue.pop(selected_index - len_active)
-            
+
             # Place the selected song at the front of the search queue to be played next
             self.state.search_queue.insert(0, selected_song)
             # Set the override flag to ensure this song plays next, regardless of mode.
@@ -202,9 +267,9 @@ class QueueDropdown(discord.ui.Select):
         # Stop the current song to trigger the `after` callback, which will play the new song.
         if self.bot.voice_client_music and self.bot.voice_client_music.is_connected():
             self.bot.voice_client_music.stop()
-            await interaction.response.send_message(f"✅ Jumping to **{selected_song.get('title')}**.", delete_after=10)
+            await interaction.response.send_message(f"✅ Jumping to **{selected_song.get('title')}**.", ephemeral=True, delete_after=10)
         else:
-            await interaction.response.send_message(f"✅ Queued **{selected_song.get('title')}** to play next.", delete_after=10)
+            await interaction.response.send_message(f"✅ Queued **{selected_song.get('title')}** to play next.", ephemeral=True, delete_after=10)
 
         # After responding, delete the original message with the queue menu.
         try:
@@ -242,34 +307,34 @@ class QueueView(discord.ui.View):
 
     def update_components(self):
         self.clear_items()
-        
+
         start_index = self.current_page * self.page_size
         end_index = start_index + self.page_size
         page_items = self.full_queue[start_index:end_index]
-        
+
         if page_items:
             self.add_item(QueueDropdown(self.bot, self.state, page_items, self.author))
-        
+
         if self.total_pages > 1:
             self.add_item(self.create_nav_button("⬅️ Prev", "prev_page", self.current_page == 0))
             self.add_item(self.create_nav_button("Next ➡️", "next_page", self.current_page >= self.total_pages - 1))
 
     def create_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
         button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, custom_id=custom_id, disabled=disabled)
-        
+
         async def nav_callback(interaction: discord.Interaction):
             if interaction.user != self.author:
                 await interaction.response.send_message("You can't control this menu.", ephemeral=True)
                 return
-            
+
             if interaction.data['custom_id'] == 'prev_page':
                 self.current_page -= 1
             elif interaction.data['custom_id'] == 'next_page':
                 self.current_page += 1
-            
+
             self.update_components()
             await interaction.response.edit_message(content=self.get_content(), view=self)
-        
+
         button.callback = nav_callback
         return button
 
@@ -287,12 +352,12 @@ class MusicView(discord.ui.View):
     def __init__(self, bot_config: BotConfig, state: BotState):
         super().__init__(timeout=None)
         btns = [
-            ("⏯️", "🎵", "!mpauseplay", discord.ButtonStyle.danger), 
-            ("⏭️", "🎵", "!mskip", discord.ButtonStyle.success), 
-            ("🔀", "🎵", "!mshuffle", discord.ButtonStyle.primary),              
-            ("❌", "🎵", "!mclear", discord.ButtonStyle.secondary)            
+            ("⏯️", "🎵", "!mpauseplay", discord.ButtonStyle.danger),
+            ("⏭️", "🎵", "!mskip", discord.ButtonStyle.success),
+            ("🔀", "🎵", "!mshuffle", discord.ButtonStyle.primary),
+            ("❌", "🎵", "!mclear", discord.ButtonStyle.secondary)
         ]
-        for e, l, c, s in btns: 
+        for e, l, c, s in btns:
             self.add_item(MusicButton(label=l, emoji=e, command=c, style=s, bot_config=bot_config, state=state))
 
 class BotHelper:
@@ -338,7 +403,7 @@ class BotHelper:
                 color=discord.Color.red()
             )
             embed.set_author(name=member_data['name'], icon_url=member_data['avatar_url'])
-            
+
             # Add the duration the member was in the server
             if member_data['joined_at']:
                 duration = datetime.now(timezone.utc) - member_data['joined_at']
@@ -362,9 +427,9 @@ class BotHelper:
                     duration = datetime.now(timezone.utc) - member_data['joined_at']
                     # Use the helper function for consistent formatting
                     duration_str = f" (Stayed for {format_departure_time(duration)})"
-                
+
                 description_lines.append(f"• {member_data['name']}{duration_str}")
-            
+
             description = "\n".join(description_lines)
 
             # Summarize if more than 10 members left
@@ -382,7 +447,7 @@ class BotHelper:
     async def _log_timeout_in_state(self, member: discord.Member, duration_seconds: int, reason: str, moderator_name: str, moderator_id: Optional[int] = None):
         """
         A centralized, thread-safe method for recording a member's timeout information into the bot's state.
-        
+
         Args:
             member: The member who was timed out.
             duration_seconds: The duration of the timeout in seconds.
@@ -403,14 +468,14 @@ class BotHelper:
         """
         Creates a standardized, rich embed for member departure events like kicks and bans.
         This ensures consistent formatting for all such notifications.
-        
+
         Args:
             member_or_user: The user/member who departed. Can be a real object or a mock object.
             moderator: The moderator responsible for the action.
             reason: The reason for the departure.
             action: The type of action (e.g., "KICKED", "BANNED").
             color: The color for the embed's side bar.
-        
+
         Returns:
             A fully constructed discord.Embed object ready to be sent.
         """
@@ -529,10 +594,10 @@ class BotHelper:
         except Exception as e:
             logger.warning(f"Could not fetch user banner for punishment notification: {e}")
             pass
-        
+
         # Add fields for moderator and reason
         embed.add_field(name="Moved By", value=moderator_name, inline=True)
-        
+
         final_reason = reason or "No reason provided"
         embed.add_field(name="Reason", value=final_reason, inline=False)
 
@@ -563,8 +628,8 @@ class BotHelper:
                 embed.set_image(url=user_obj.banner.url)
         except Exception:
             pass
-        
-        embed.add_field(name="Moderator", value=moderator.mention, inline=True)
+
+        # --- UPDATED ORDER ---
         embed.add_field(name="Duration", value=duration_str, inline=True)
 
         roles = [role.mention for role in member.roles if role.name != "@everyone"]
@@ -572,6 +637,9 @@ class BotHelper:
             roles.reverse()
             roles_str = " ".join(roles)
             embed.add_field(name="Roles", value=roles_str, inline=True)
+            
+        embed.add_field(name="Moderator", value=moderator.mention, inline=True)
+        # --- END UPDATED ORDER ---
 
         final_reason = reason or "No reason provided"
         embed.add_field(name="Reason", value=final_reason, inline=False)
@@ -647,7 +715,7 @@ class BotHelper:
         Handles the on_member_ban event. This now acts as the primary source for ban info.
         """
         if guild.id != self.bot_config.GUILD_ID: return
-        
+
         chat_channel = guild.get_channel(self.bot_config.CHAT_CHANNEL_ID)
         if not chat_channel: return
 
@@ -660,10 +728,10 @@ class BotHelper:
                     break
         except Exception as e:
             logger.error(f"Could not fetch audit log for ban: {e}")
-        
+
         embed = await self._create_departure_embed(user, moderator, reason, "BANNED", discord.Color.red())
         await chat_channel.send(embed=embed)
-        
+
         async with self.state.moderation_lock:
             # Mark this user as banned so on_member_remove knows to ignore them
             self.state.recently_banned_ids.add(user.id)
@@ -725,7 +793,7 @@ class BotHelper:
 
         # It's a leave, so buffer the data for batch processing.
         logger.info(f"Buffering LEAVE for {member.name}.")
-        
+
         # Extract all necessary information *before* the member object becomes invalid.
         roles = [role.mention for role in member.roles if role.name != "@everyone"]
         roles.reverse() # Show highest roles first
@@ -739,7 +807,7 @@ class BotHelper:
             'joined_at': member.joined_at,
             'roles': role_string
         }
-        
+
         async with self.state.moderation_lock:
             # Add to the permanent history log for !whois
             self.state.recent_leaves.append((member.id, member.name, member.display_name, datetime.now(timezone.utc), role_string))
@@ -760,8 +828,8 @@ class BotHelper:
             help_description = """
 **Pause** --------- Pause Omegle
 **Skip** ----------- Skip/Start Omegle
-**Info** ----------- Server Info/Rules
-**Top 10** -------- Top 10 VC Times
+**Report** -------- Report Current User
+**Top 10** --------- Top 10 VC Times
 **!commands** --- List All Commands
 """
             embed = discord.Embed(title="👤  Omegle Controls  👤", description=help_description, color=discord.Color.blue())
@@ -770,7 +838,7 @@ class BotHelper:
                 await destination.send(embed=embed, view=HelpView(self.bot_config, self.state))
         except Exception as e:
             logger.error(f"Error in send_help_menu: {e}", exc_info=True)
-            
+
     @handle_errors
     async def show_bans(self, ctx) -> None:
         """(Command) Lists all banned users in the server."""
@@ -801,7 +869,7 @@ class BotHelper:
     async def show_top_members(self, ctx) -> None:
         """(Command) Lists the top 10 oldest server members and top 10 oldest Discord accounts."""
         await ctx.send("Gathering member data, this may take a moment...")
-        
+
         members = list(ctx.guild.members)
         joined_members = sorted([m for m in members if m.joined_at], key=lambda m: m.joined_at)[:10]
         created_members = sorted(members, key=lambda m: m.created_at)[:10]
@@ -825,14 +893,14 @@ class BotHelper:
             embed.add_field(name="Account Created", value=f"{member.created_at.strftime('%m-%d-%Y')}\n({get_discord_age(member.created_at)} old)", inline=True)
             if show_join_date and member.joined_at:
                 embed.add_field(name="Joined Server", value=f"{member.joined_at.strftime('%m-%d-%Y')}\n({get_discord_age(member.joined_at)} ago)", inline=True)
-            
+
             roles = [role.mention for role in member.roles if role.name != "@everyone"]
             if roles:
                 role_str = " ".join(roles)
                 if len(role_str) > 1024:
                     role_str = "Too many roles to display."
                 embed.add_field(name=f"Roles ({len(roles)})", value=role_str, inline=False)
-            
+
             return embed
 
         await ctx.send("**🏆 Top 10 Oldest Server Members (by join date)**")
@@ -868,7 +936,7 @@ class BotHelper:
                 sorted_members = sorted(role.members, key=lambda m: m.name.lower())
 
                 def process_member(member): return f"{member.display_name} ({member.name}#{member.discriminator})"
-                
+
                 embeds = create_message_chunks(
                     entries=sorted_members, title=f"Role: {role.name}", process_entry=process_member,
                     as_embed=True, embed_color=role.color or discord.Color.default()
@@ -918,7 +986,7 @@ class BotHelper:
         from tools import build_embed
         record_command_usage(self.state.analytics, "!commands")
         record_command_usage_by_user(self.state.analytics, ctx.author.id, "!commands")
-        
+
         user_commands = (
             "`!skip` - Skips the current Omegle user.\n"
             "`!refresh` - Refreshes the Omegle page.\n"
@@ -937,6 +1005,7 @@ class BotHelper:
         )
 
         admin_commands = (
+            "`!report` - Reports the current user on Omegle.\n"
             "`!help` - Sends the interactive help menu with buttons.\n"
             "`!music` - Sends the interactive music control menu.\n"
             "`!moff` - Disables all music features and disconnects the bot.\n"
@@ -970,7 +1039,7 @@ class BotHelper:
             "`!clearwhois` - Clears all historical event data.\n"
             "`!shutdown` - Safely shuts down the bot."
         )
-        
+
         await ctx.send(embed=build_embed("👤 User Commands (Camera On)", user_commands, discord.Color.blue()))
         await ctx.send(embed=build_embed("🛡️ Admin Commands (Camera On)", admin_commands, discord.Color.red()))
         await ctx.send(embed=build_embed("👑 Owner Commands (No Requirements)", allowed_commands, discord.Color.gold()))
@@ -1012,11 +1081,12 @@ class BotHelper:
                 else:
                     # Collect all IDs that need to be fetched via the API.
                     ids_to_fetch.add(user_id)
-            
+
             # Concurrently fetch all users who were not in the cache.
             if ids_to_fetch:
                 # This helper coroutine fetches a user and handles potential errors.
                 async def fetch_user(uid):
+                    await asyncio.sleep(0.1) # Add a small delay to space out API calls
                     try:
                         return uid, await self.bot.fetch_user(uid)
                     except discord.NotFound:
@@ -1029,7 +1099,7 @@ class BotHelper:
                 fetch_tasks = [fetch_user(uid) for uid in ids_to_fetch]
                 # asyncio.gather runs all fetch tasks at once and waits for them to complete.
                 results = await asyncio.gather(*fetch_tasks)
-                
+
                 # Populate the user_map with the results from the concurrent fetches.
                 for uid, user_obj in results:
                     user_map[uid] = user_obj
@@ -1038,25 +1108,15 @@ class BotHelper:
         def get_clean_mention(identifier):
             if identifier is None:
                 return "Unknown"
-            
-            # --- BLOCK 1: Handle integer IDs ---
-            # This is the preferred method as IDs are unique.
+
+            # This is the preferred method as IDs are unique and always work.
             if isinstance(identifier, int):
-                # First, try the server's cache. It's the fastest method.
-                if member := ctx.guild.get_member(identifier):
-                    return member.mention
-                # If the user is not in the cache (e.g., they left the server),
-                # we can still create a valid mention using their ID. This is 100% accurate.
+                # We can create a valid mention using their ID, which is 100% accurate
+                # even if the user has left the server.
                 return f"<@{identifier}>"
 
-            # --- BLOCK 2: Handle string identifiers ---
-            # This is a fallback for older data where an ID might not have been stored.
-            if isinstance(identifier, str):
-                # Use the less reliable name search only as a last resort.
-                if member := discord.utils.find(lambda m: m.name == identifier or m.display_name == identifier, ctx.guild.members):
-                    return member.mention
-
-            # If the identifier is not an int or a resolvable string, just return it.
+            # If the identifier is not an int (e.g., a string like "System" or "AutoMod"),
+            # just return it as is.
             return str(identifier)
 
         def get_user_display_info(user_id, stored_username=None, stored_display_name=None):
@@ -1073,11 +1133,11 @@ class BotHelper:
                 timed_by = data.get("timed_by_id", data.get("timed_by", "Unknown"))
                 reason = data.get("reason", "No reason provided")
                 start_ts = data.get("start_timestamp")
-                
+
                 line = f"• {member.mention} - by {get_clean_mention(timed_by)}"
                 if reason and reason != "No reason provided":
                     line += f" for *{reason}*"
-                
+
                 if start_ts:
                     line += f" | <t:{int(start_ts)}:R>"
                 return line
@@ -1122,7 +1182,7 @@ class BotHelper:
                 user_info = get_user_display_info(uid, name, dname)
                 return f"• {user_info} - by {mod} <t:{int(ts.timestamp())}:R>"
             reports["🔓 Recent Unbans"] = create_message_chunks(unban_list, "🔓 Recent Unbans (24h)", process_unban, as_embed=True, embed_color=discord.Color.dark_green())
-            
+
         if role_change_list:
             has_data = True
             def process_role_change(entry):
@@ -1225,32 +1285,22 @@ class BotHelper:
         def get_clean_mention(identifier):
             if identifier is None:
                 return "Unknown"
-            
-            # --- BLOCK 1: Handle integer IDs ---
-            # This is the preferred method as IDs are unique.
+
+            # This is the preferred method as IDs are unique and always work.
             if isinstance(identifier, int):
-                # First, try the server's cache. It's the fastest method.
-                if member := ctx.guild.get_member(identifier):
-                    return member.mention
-                # If the user is not in the cache (e.g., they left the server),
-                # we can still create a valid mention using their ID. This is 100% accurate.
+                # We can create a valid mention using their ID, which is 100% accurate
+                # even if the user has left the server.
                 return f"<@{identifier}>"
 
-            # --- BLOCK 2: Handle string identifiers ---
-            # This is a fallback for older data where an ID might not have been stored.
-            if isinstance(identifier, str):
-                # Use the less reliable name search only as a last resort.
-                if member := discord.utils.find(lambda m: m.name == identifier or m.display_name == identifier, ctx.guild.members):
-                    return member.mention
-
-            # If the identifier is not an int or a resolvable string, just return it.
+            # If the identifier is not an int (e.g., a string like "System" or "AutoMod"),
+            # just return it as is.
             return str(identifier)
 
         # --- 1. Currently Timed Out Users ---
         timed_out_members = [member for member in ctx.guild.members if member.is_timed_out()]
         if timed_out_members:
             has_data = True
-            
+
             # First, gather all necessary data in one async block to be efficient.
             timeout_data = {}
             async with self.state.moderation_lock:
@@ -1263,13 +1313,13 @@ class BotHelper:
                 timed_by = data.get("timed_by_id", data.get("timed_by"))
                 reason = data.get("reason")
                 start_ts = data.get("start_timestamp")
-                
+
                 line = f"• {member.mention}"
                 if timed_by and timed_by != "Unknown":
                     line += f" - by {get_clean_mention(timed_by)}"
                 if reason and reason != "No reason provided":
                     line += f" for *{reason}*"
-                
+
                 if start_ts:
                     line += f" | <t:{int(start_ts)}:R>"
                 return line
@@ -1290,11 +1340,11 @@ class BotHelper:
                 mod_name = entry[5]
                 mod_id = entry[6] if len(entry) > 6 else None
                 mod_mention = get_clean_mention(mod_id) if mod_id else get_clean_mention(mod_name)
-                
+
                 line = f"• <@{user_id}>"
                 if mod_mention and mod_mention != "Unknown":
                     line += f" - Removed by: {mod_mention}"
-                
+
                 line += f" <t:{int(ts.timestamp())}:R>"
                 return line
 
@@ -1310,7 +1360,7 @@ class BotHelper:
         # --- 3. Command Disabled Users ---
         async with self.state.moderation_lock:
             disabled_user_ids = list(self.state.omegle_disabled_users)
-        
+
         if disabled_user_ids:
             has_data = True
             async def process_disabled_user(user_id):
@@ -1341,16 +1391,19 @@ class BotHelper:
                         await ctx.send(embed=chunk)
                     else:
                         await ctx.send(chunk)
-        
+
         if not has_data:
             await ctx.send("📭 No active timeouts, untimeouts, or disabled users found.")
 
-    async def _send_vc_time_report(self, destination: discord.abc.Messageable) -> None:
+    # --- MODIFIED AND NEW TIMES REPORT FUNCTIONS ---
+
+    async def create_times_report_embed(self) -> Optional[discord.Embed]:
         """
-        An internal helper function to generate and send the voice channel time report.
-        This is used by both the `!times` command and the daily auto-stats task.
+        An internal helper function to generate the complete voice channel time report embed.
         """
-        guild = destination.guild if hasattr(destination, 'guild') else self.bot.get_guild(self.bot_config.GUILD_ID)
+        guild = self.bot.get_guild(self.bot_config.GUILD_ID)
+        if not guild:
+            return None
 
         async def get_user_display_info(user_id, data):
             """Gets a user's display info, trying the live member object first then falling back to stored data."""
@@ -1358,9 +1411,9 @@ class BotHelper:
                 roles = [role for role in member.roles if role.name != "@everyone"]
                 highest_role = max(roles, key=lambda r: r.position) if roles else None
                 role_display = f"**[{highest_role.name}]**" if highest_role else ""
-                return f"{member.mention} {role_display} ({member.name})"
+                return f"{member.mention} {role_display}"
             username = data.get("username", "Unknown User")
-            return f"`{username}` (Left/Not Found) <@{user_id}>"
+            return f"`{username}` (Left/Not Found)"
 
         def is_excluded(user_id): return user_id in self.bot_config.STATS_EXCLUDED_USERS
 
@@ -1379,11 +1432,11 @@ class BotHelper:
                         member = guild.get_member(user_id)
                         combined_data[user_id] = { "total_time": active_duration, "username": member.name if member else "Unknown", "display_name": member.display_name if member else "Unknown" }
                     total_time_all_users += active_duration
-            
+
             sorted_users = sorted(combined_data.items(), key=lambda item: item[1].get("total_time", 0), reverse=True)[:10]
             return total_time_all_users, sorted_users
 
-        # First, calculate all necessary statistics before sending any messages
+        # Calculate statistics
         total_tracking_seconds = 0
         async with self.state.vc_lock:
             all_start_times = [s["start"] for d in self.state.vc_time_data.values() for s in d.get("sessions", []) if "start" in s]
@@ -1397,42 +1450,51 @@ class BotHelper:
         if total_tracking_seconds > 60:
             average_user_count = round(total_time_all_users / total_tracking_seconds)
 
-        # Now, send the report in the desired order
-        
-        # 1. Send Tracking Started and Average User Count
-        header_lines = []
+        # Build the embed description
+        description_lines = []
         tracking_time_str = format_duration(total_tracking_seconds)
-        header_lines.append(f"⏳ **Tracking Started:** {tracking_time_str} ago")
+        description_lines.append(f"⏳ **Tracking Started:** {tracking_time_str} ago")
         if average_user_count > 0:
-            header_lines.append(f"👥 **Average User Count:** {average_user_count}")
-        await destination.send("\n".join(header_lines))
+            description_lines.append(f"👥 **Average User Count:** {average_user_count}")
 
-        # 2. Send the Top 10 VC Members list
+        description_lines.append("\n" + "─"*20 + "\n")
+
         if top_vc_users:
-            async def process_vc_entry(entry):
-                uid, data = entry
+            for i, (uid, data) in enumerate(top_vc_users):
                 total_s = data.get('total_time', 0)
                 time_str = format_duration(total_s)
                 display_info = await get_user_display_info(uid, data)
-                return f"• {display_info}: {time_str}"
-            processed_entries = await asyncio.gather(*(process_vc_entry(entry) for entry in top_vc_users))
-            for chunk in create_message_chunks(processed_entries, "🏆 Top 10 VC Members", lambda x: x, 10, as_embed=True, embed_color=discord.Color.gold()):
-                await destination.send(embed=chunk)
-        else: 
-            await destination.send("No VC time data available yet.")
+                description_lines.append(f"**{i+1}.** {display_info}: **{time_str}**")
+        else:
+            description_lines.append("No VC time data available yet.")
 
-        # 3. Send the Total VC Time at the end
         total_hours = math.ceil(total_time_all_users / 3600)
         total_time_str = f"{total_hours} hours"
-        await destination.send(f"⏱ **Total VC Time (All Users):** {total_time_str}")
+        description_lines.append("\n" + "─"*20 + "\n")
+        description_lines.append(f"⏱ **Total VC Time (All Users):** {total_time_str}")
+
+        embed = discord.Embed(
+            title="🏆 Top 10 VC Members",
+            description="\n".join(description_lines),
+            color=discord.Color.gold()
+        )
+        return embed
 
     @handle_errors
-    async def show_times_report(self, destination: Union[commands.Context, discord.TextChannel]) -> None:
-        """(Command) Public-facing function to show the VC time report."""
+    async def show_times_report(self, destination: Union[commands.Context, discord.TextChannel]) -> Optional[discord.Message]:
+        """
+        (Command) Public-facing function to show the VC time report.
+        Now returns the message object.
+        """
+        channel = destination.channel if isinstance(destination, commands.Context) else destination
         if isinstance(destination, commands.Context):
             record_command_usage(self.state.analytics, "!times")
             record_command_usage_by_user(self.state.analytics, destination.author.id, "!times")
-        await self._send_vc_time_report(destination.channel if isinstance(destination, commands.Context) else destination)
+
+        embed = await self.create_times_report_embed()
+        if embed:
+            return await channel.send(embed=embed)
+        return None
 
     @handle_errors
     async def show_analytics_report(self, destination: Union[commands.Context, discord.TextChannel]) -> None:
@@ -1445,11 +1507,11 @@ class BotHelper:
         else:
             ctx = None # No context when run from a task
             channel = destination
-        
+
         guild = channel.guild
 
-        # This part remains the same
-        await self._send_vc_time_report(channel)
+        # MODIFIED: Call the new times report function
+        await self.show_times_report(channel)
         await channel.send("\n" + "─"*50 + "\n")
 
         async def get_user_display_info(user_id):
@@ -1486,7 +1548,7 @@ class BotHelper:
         # Overall Command Usage
         async with self.state.analytics_lock:
             command_usage_data = self.state.analytics.get("command_usage")
-        
+
         if command_usage_data:
             has_any_stats_data = True
             sorted_commands = sorted(command_usage_data.items(), key=lambda x: x[1], reverse=True)
@@ -1501,14 +1563,14 @@ class BotHelper:
             has_any_stats_data = True
             filtered_users = [(uid, cmds) for uid, cmds in usage_by_user_data.items() if not is_excluded(uid)]
             sorted_users = sorted(filtered_users, key=lambda item: sum(item[1].values()), reverse=True)[:10]
-            
+
             async def process_user_usage(entry):
                 uid, cmds = entry
                 usage = ", ".join([f"{c}: {cnt}" for c, cnt in sorted(cmds.items(), key=lambda x: x[1], reverse=True)])
                 # Use the new helper function to get a plain username
                 user_display = await get_user_plain_name(uid)
                 return f"• {user_display}: {usage}"
-                
+
             if sorted_users:
                 processed_entries = await asyncio.gather(*(process_user_usage(entry) for entry in sorted_users))
                 for chunk in create_message_chunks(processed_entries, "👤 Top 10 Command Users", lambda x: x, as_embed=True, embed_color=discord.Color.green()):
@@ -1597,7 +1659,7 @@ class BotHelper:
                     self.state.recent_unbans.clear()
                     self.state.recent_untimeouts.clear()
                     self.state.recent_role_changes.clear()
-                
+
                 await ctx.send("✅ All `!whois` historical data has been reset.")
                 logger.info(f"`!whois` data cleared by {ctx.author.name} (ID: {ctx.author.id})")
                 if self.save_state:
@@ -1663,14 +1725,14 @@ class BotHelper:
             if fetched_user:
                 user_obj = fetched_user
         except Exception:
-            pass 
-        
+            pass
+
         embed = discord.Embed(description=f"{member.mention}", color=discord.Color.blue())
 
         # It checks if the discriminator is '0' and formats the name accordingly.
         author_name = member.name if member.discriminator == '0' else f"{member.name}#{member.discriminator}"
         embed.set_author(name=author_name, icon_url=member.display_avatar.url)
-        
+
         embed.set_thumbnail(url=member.display_avatar.url)
         if hasattr(user_obj, 'banner') and user_obj.banner:
             embed.set_image(url=user_obj.banner.url)
@@ -1678,9 +1740,9 @@ class BotHelper:
         embed.add_field(name="Account Created", value=f"{member.created_at.strftime('%m-%d-%Y')}\n({get_discord_age(member.created_at)} old)", inline=True)
         if member.joined_at:
             embed.add_field(name="Joined Server", value=f"{member.joined_at.strftime('%m-%d-%Y')}\n({get_discord_age(member.joined_at)} ago)", inline=True)
-        
+
         embed.add_field(name="User ID", value=str(member.id), inline=False)
-        
+
         roles = [role.mention for role in member.roles if role.name != "@everyone"]
         if roles:
             roles.reverse()
@@ -1688,28 +1750,37 @@ class BotHelper:
             if len(role_str) > 1024:
                 role_str = "Too many roles to display."
             embed.add_field(name=f"Roles", value=role_str, inline=False)
-        
+
         await ctx.send(embed=embed)
-        
+
     # --- NEW MUSIC HELPER METHODS ---
-    async def send_music_menu(self, target: Any) -> None:
-        """Sends the interactive music control menu."""
+
+    async def create_music_menu_embed_and_view(self) -> Tuple[Optional[discord.Embed], Optional[View]]:
+        """
+        Creates the music menu embed and view based on the current state.
+        This is separated to allow both sending and editing the menu.
+        """
+        if not self.state.music_enabled:
+            return None, None
+
         try:
             status_lines = []
             async with self.state.music_lock:
-                if self.state.current_song:
+                if self.state.is_music_playing and self.state.current_song:
                     status_lines.append(f"**Now Playing:** `{self.state.current_song['title']}`")
+                elif self.state.is_music_paused and self.state.current_song:
+                     status_lines.append(f"**Paused:** `{self.state.current_song['title']}`")
                 else:
                     status_lines.append("**Now Playing:** Nothing")
 
                 current_mode_str = self.state.music_mode.capitalize()
                 status_lines.append(f"**Mode:** {current_mode_str}")
-                
+
                 # Calculate display volume as a percentage of the configured max volume
                 display_volume = 0
                 if self.bot_config.MUSIC_MAX_VOLUME > 0:
                     display_volume = int((self.state.music_volume / self.bot_config.MUSIC_MAX_VOLUME) * 100)
-                
+
                 status_lines.append(f"**Volume:** {display_volume}%")
 
                 queue = self.state.active_playlist + self.state.search_queue
@@ -1726,16 +1797,33 @@ class BotHelper:
 *{" | ".join(status_lines)}*
 """
             embed = discord.Embed(title="🎵  Music Controls 🎵", description=description, color=discord.Color.purple())
+            view = MusicView(self.bot_config, self.state)
+            return embed, view
+
+        except Exception as e:
+            logger.error(f"Error in create_music_menu_embed_and_view: {e}", exc_info=True)
+            return None, None
+
+    async def send_music_menu(self, target: Any) -> Optional[discord.Message]:
+        """Sends the interactive music control menu and returns the message object."""
+        try:
+            embed, view = await self.create_music_menu_embed_and_view()
+            if not embed or not view:
+                logger.warning("Failed to create music menu embed/view.")
+                return None
+
             destination = target.channel if hasattr(target, 'channel') else target
 
             if destination and hasattr(destination, 'send'):
-                view = MusicView(self.bot_config, self.state)
-                await destination.send(embed=embed, view=view)
+                message = await destination.send(embed=embed, view=view)
+                return message
             else:
                 logger.warning(f"Unsupported target type for music menu: {type(target)}")
+                return None
         except Exception as e:
             logger.error(f"Error in send_music_menu: {e}", exc_info=True)
-            
+            return None
+
     @handle_errors
     async def confirm_and_clear_music_queue(self, ctx) -> None:
         """(Command) Confirms with the user and clears all music queues and stops playback."""
@@ -1750,7 +1838,7 @@ class BotHelper:
             if not full_queue and not is_playing:
                 await ctx.send("The music queue is already empty and nothing is playing.", delete_after=10)
                 return
-            
+
             queue_length = len(full_queue)
 
         confirm_msg = await ctx.send(
@@ -1772,18 +1860,18 @@ class BotHelper:
                     # Clear all song queues
                     self.state.search_queue.clear()
                     self.state.active_playlist.clear()
-                    
+
                     # Check if music is playing/paused and stop it.
                     if self.bot.voice_client_music and (self.bot.voice_client_music.is_playing() or self.bot.voice_client_music.is_paused()):
                         was_playing = True
                         # Set a flag to tell the 'after' callback (play_next_song) to halt execution.
-                        self.state.stop_after_clear = True 
+                        self.state.stop_after_clear = True
                         self.bot.voice_client_music.stop()
 
                 response_text = f"✅ Cleared **{queue_length}** songs from the queue."
                 if was_playing:
                     response_text += " and stopped playback."
-                
+
                 await confirm_msg.edit(content=response_text, view=None)
                 logger.info(f"Music queue and playback cleared by {ctx.author.name}")
             else:
@@ -1804,12 +1892,12 @@ class BotHelper:
             if not self.state.current_song or not self.bot.voice_client_music or not (self.bot.voice_client_music.is_playing() or self.bot.voice_client_music.is_paused()):
                 await ctx.send("Nothing is currently playing.", delete_after=10)
                 return
-            
+
             song_info = self.state.current_song
             title = song_info.get('title', 'Unknown Title')
-            
+
             embed = discord.Embed(title="🎵", description=f"**{title}**", color=discord.Color.purple())
-            
+
             if not song_info.get('is_stream', False):
                 embed.add_field(name="Source", value="Local Library", inline=True)
             else:
@@ -1823,7 +1911,7 @@ class BotHelper:
             embed.add_field(name="Volume", value=f"{display_volume}%", inline=True)
             embed.add_field(name="Mode", value=self.state.music_mode.capitalize(), inline=True)
 
-            await ctx.send(embed=embed)
+        await ctx.send(embed=embed)
 
     @handle_errors
     async def show_queue(self, ctx) -> None:
@@ -1832,7 +1920,7 @@ class BotHelper:
             if not self.state.active_playlist and not self.state.search_queue:
                 await ctx.send("The music queue is empty.", delete_after=10)
                 return
-        
+
         view = QueueView(self.bot, self.state, ctx.author)
         await view.start()
         view.message = await ctx.send(content=view.get_content(), view=view)

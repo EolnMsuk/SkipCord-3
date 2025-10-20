@@ -5,13 +5,14 @@
 
 import asyncio
 import os
+import time # Added for time.sleep in initialize
 from functools import wraps
 from typing import Optional, Union
 
 import discord
 from discord.ext import commands
 from selenium import webdriver
-from selenium.common.exceptions import WebDriverException, StaleElementReferenceException, UnexpectedAlertPresentException
+from selenium.common.exceptions import WebDriverException, StaleElementReferenceException, UnexpectedAlertPresentException, NoSuchElementException
 from selenium.webdriver.edge.service import Service
 from loguru import logger
 
@@ -64,7 +65,7 @@ def require_healthy_driver(func):
                 if not await self.is_healthy():
                     logger.warning("Driver is unhealthy. Attempting to relaunch the browser...")
                     ctx = find_context()
-                    
+
                     await send_to_context(ctx, "Browser connection lost. Attempting to relaunch...")
 
                     # Attempt to re-initialize the driver.
@@ -72,7 +73,7 @@ def require_healthy_driver(func):
                         logger.critical("Failed to relaunch the browser after retries. Manual restart required.")
                         await send_to_context(ctx, "Failed to relaunch the browser. Please restart the bot manually.", ephemeral=True)
                         return False # Indicate that the relaunch failed.
-                    
+
                     logger.info("Browser relaunched successfully.")
                     await send_to_context(ctx, "Browser has been successfully relaunched.")
 
@@ -87,6 +88,47 @@ class OmegleHandler:
     This includes initializing the browser, navigating, and sending commands.
     """
 
+    async def _attempt_send_relay(self) -> bool:
+        """
+        Internal helper to send the /relay command.
+        It checks if the command has already been sent and updates the state on success.
+        Returns True on success, False on failure.
+        """
+        if not self.state or self.state.relay_command_sent:
+            return True  # Already sent, so it's "successful" in a sense.
+
+        logger.info("Attempting to send /relay command...")
+        try:
+            chat_input_selector = "textarea.messageInput"
+            send_button_xpath = "//div[contains(@class, 'mainText') and text()='Send']"
+
+            def send_relay_command():
+                try:
+                    # Give the page a moment to ensure elements are interactable
+                    time.sleep(1.0)
+                    chat_input = self.driver.find_element("css selector", chat_input_selector)
+                    chat_input.send_keys("/relay")
+                    time.sleep(0.5) # Wait briefly after typing
+                    send_button = self.driver.find_element("xpath", send_button_xpath)
+                    send_button.click()
+                    return True
+                except Exception as e:
+                    logger.warning(f"Could not find/interact with chat elements to send /relay. Will retry on next skip. Error: {e}")
+                    return False
+
+            relay_sent = await asyncio.to_thread(send_relay_command)
+
+            if relay_sent:
+                self.state.relay_command_sent = True
+                logger.info("Successfully sent /relay command and updated state.")
+                return True
+        except Exception as e:
+            logger.error(f"An unexpected error occurred when trying to send /relay: {e}")
+
+        logger.warning("Failed to send /relay command. Will retry on next skip.")
+        return False
+
+
     def __init__(self, bot: commands.Bot, bot_config: BotConfig):
         self.bot = bot
         self.config = bot_config
@@ -99,7 +141,7 @@ class OmegleHandler:
         """
         Initializes the Selenium Edge WebDriver with enhanced anti-detection measures.
         It first tries Selenium's automatic manager, then falls back to a specified
-        driver path if the first attempt fails.
+        driver path if the first attempt fails. It also sets initial volume.
 
         Returns:
             True if the driver was initialized successfully, False otherwise.
@@ -123,7 +165,7 @@ class OmegleHandler:
                 options.add_argument("--disable-popup-blocking")
                 options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
                 options.add_experimental_option('useAutomationExtension', False)
-                
+
                 # --- [NEW] Primary Initialization (Automatic) ---
                 try:
                     logger.info("Initializing Selenium with automatic driver management...")
@@ -144,7 +186,7 @@ class OmegleHandler:
                     else:
                         logger.warning("No fallback driver path specified or path is invalid. Retrying with automatic management.")
                         raise auto_e # Re-raise the original exception
-                
+
                 # --- Execute advanced stealth script before the website can run its own scripts ---
                 stealth_script = """
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -170,21 +212,60 @@ class OmegleHandler:
                         await asyncio.to_thread(set_geometry)
                     except Exception as geo_e:
                         logger.error(f"Failed to restore window geometry: {geo_e}")
-                
+
                 # Navigate to the target URL
+                logger.info(f"Navigating to {self.config.OMEGLE_VIDEO_URL}...")
                 await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
+                # Add a small wait for the page elements to load after navigation
+                await asyncio.sleep(3.0) # Wait 3 seconds
+
+                # --- Set Volume ---
+                logger.info("Attempting to set initial volume...")
+                try:
+                    # Set Volume (e.g., to 50%)
+                    volume_percentage = 50 # Or get from config if you prefer
+                    set_volume_script = f"""
+                    var slider = document.getElementById('vol-control');
+                    if (slider) {{
+                        slider.value = {volume_percentage};
+                        var event = new Event('input', {{ bubbles: true }});
+                        slider.dispatchEvent(event);
+                        console.log('Volume set to {volume_percentage}%');
+                        return true;
+                    }} else {{
+                        console.error('Volume slider #vol-control not found.');
+                        return false;
+                    }}
+                    """
+                    volume_set = await asyncio.to_thread(self.driver.execute_script, set_volume_script)
+                    if volume_set:
+                        logger.info(f"Successfully executed script to set volume to {volume_percentage}%.")
+                    else:
+                        logger.warning("Volume slider element not found via script.")
+
+                except Exception as vol_e:
+                    logger.error(f"Error during post-navigation volume automation: {vol_e}")
+
+                # Reset relay flag and attempt to send on startup
+                if self.state:
+                    self.state.relay_command_sent = False
+                    logger.info("Relay flag reset. Attempting to send /relay on startup...")
+                    await asyncio.sleep(1.0) # Give page a final moment
+                    await self._attempt_send_relay()
+                else:
+                    logger.warning("Bot state not attached to omegle_handler, cannot send /relay on startup.")
 
                 self._driver_initialized = True
                 logger.info("Selenium driver initialized successfully.")
                 return True
-                
+
             except Exception as e:
                 logger.error(f"Selenium initialization attempt {attempt + 1} failed: {e}")
                 if "This version of Microsoft Edge Driver only supports" in str(e):
                     logger.critical("CRITICAL: WebDriver version mismatch. Please update Edge browser or check for driver issues.")
                 if attempt < DRIVER_INIT_RETRIES - 1:
                     await asyncio.sleep(DRIVER_INIT_DELAY)
-        
+
         logger.critical("Failed to initialize Selenium driver after retries.")
         self._driver_initialized = False
         return False
@@ -214,7 +295,7 @@ class OmegleHandler:
                 size = self.driver.get_window_size()
                 position = self.driver.get_window_position()
                 return size, position
-            
+
             size, position = await asyncio.to_thread(get_geo)
             return size, position
         except Exception as e:
@@ -239,6 +320,7 @@ class OmegleHandler:
         """
         Executes a "skip" action. It first ensures the browser is on the correct URL,
         then simulates key presses to skip the current chat.
+        It will also send the /relay command AFTER the first successful skip of a session.
         """
         # --- URL Verification & Redirect (Runs for all calls) ---
         try:
@@ -264,6 +346,7 @@ class OmegleHandler:
         if not isinstance(keys, list):
             keys = [keys]
 
+        skip_successful = False
         for attempt in range(3):
             try:
                 for i, key in enumerate(keys):
@@ -276,10 +359,11 @@ class OmegleHandler:
                     await asyncio.to_thread(self.driver.execute_script, script)
                     logger.info(f"Selenium: Sent {key} key event to page.")
                     if i < len(keys) - 1:
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(1) # Wait between keys if multiple are defined
                 
-                return True
-            
+                skip_successful = True # Mark as successful if the loop completes
+                break # Exit retry loop on success
+
             except StaleElementReferenceException:
                 logger.warning(f"StaleElementReferenceException on skip attempt {attempt + 1}. Retrying...")
                 await asyncio.sleep(0.5)
@@ -287,11 +371,18 @@ class OmegleHandler:
             except Exception as e:
                 logger.error(f"Selenium custom skip failed: {e}")
                 if ctx: await ctx.send("Failed to execute skip command in browser.")
-                return False
+                return False # Return False immediately on other errors
 
-        logger.error("Failed to execute custom skip after multiple retries due to stale elements.")
-        if ctx: await ctx.send("Failed to execute skip command after multiple retries.")
-        return False
+        if not skip_successful:
+            logger.error("Failed to execute custom skip after multiple retries due to stale elements.")
+            if ctx: await ctx.send("Failed to execute skip command after multiple retries.")
+            return False
+
+        # --- Send /relay (or retry if startup send failed) ---
+        # This helper has a built-in check so it only runs once.
+        await self._attempt_send_relay()
+
+        return True # Return True as the skip itself was successful
 
     @require_healthy_driver
     async def refresh(self, ctx: Optional[Union[commands.Context, discord.Message, discord.Interaction]] = None) -> bool:
@@ -339,8 +430,8 @@ class OmegleHandler:
                     await asyncio.to_thread(self.driver.execute_script, script)
                     logger.info(f"Selenium: Sent Escape key event to page (press {i+1}/4).")
                     if i < 3:
-                        await asyncio.sleep(0.1)
-                
+                        await asyncio.sleep(0.1) # Small delay between keys
+
                 logger.info("Selenium: Successfully sent 4 escape key presses for refresh command.")
                 return True
             except StaleElementReferenceException:
@@ -357,7 +448,7 @@ class OmegleHandler:
                     elif hasattr(ctx, 'send'):
                         await ctx.send(error_msg)
                 return False
-        
+
         logger.error("Failed to execute refresh after multiple retries due to stale elements.")
         if ctx:
             error_msg = "Failed to execute refresh command after multiple retries."
@@ -367,6 +458,47 @@ class OmegleHandler:
             elif hasattr(ctx, 'send'):
                 await ctx.send(error_msg)
         return False
+        
+    @require_healthy_driver
+    async def report_user(self, ctx: Optional[commands.Context] = None) -> bool:
+        """Finds and clicks the report flag icon, then confirms the report."""
+        try:
+            logger.info("Attempting to report user...")
+
+            # Using a more specific XPath to find the report flag
+            report_flag_xpath = "//img[@alt='Report' and contains(@class, 'reportButton')]"
+            confirm_button_id = "confirmBan"
+
+            def click_elements():
+                # Click the report flag
+                report_flag = self.driver.find_element("xpath", report_flag_xpath)
+                report_flag.click()
+                logger.info("Clicked the report flag icon.")
+                
+                # Wait for the confirmation dialog to appear
+                time.sleep(1)
+
+                # Click the final confirmation button
+                confirm_button = self.driver.find_element("id", confirm_button_id)
+                confirm_button.click()
+                logger.info("Clicked the confirmation report button.")
+
+            await asyncio.to_thread(click_elements)
+            
+            if ctx:
+                await ctx.send("✅ User has been reported.", delete_after=10)
+            return True
+
+        except NoSuchElementException as e: # Catch if elements aren't found
+             logger.error(f"Failed to find report element: {e.msg}")
+             if ctx:
+                 await ctx.send("❌ Failed to report user. Could not find report buttons on the page.", delete_after=10)
+             return False
+        except Exception as e:
+            logger.error(f"Failed to report user: {e}", exc_info=True)
+            if ctx:
+                await ctx.send("❌ Failed to report user. See logs for details.", delete_after=10)
+            return False
 
     async def check_for_ban(self) -> None:
         """
@@ -402,8 +534,7 @@ class OmegleHandler:
             # --- UNBAN DETECTION ---
             # If we see the main video URL and our state is currently banned, we've just been unbanned.
             elif self.config.OMEGLE_VIDEO_URL in current_url and self.state.is_banned:
-                logger.info("Proactive check detected the main video page. Resetting bot's banned state and announcing.")
-                self.state.is_banned = False
+                logger.info("Proactive check detected the main video page. Attempting to announce unban.")
                 try:
                     chat_channel = self.bot.get_channel(self.config.CHAT_CHANNEL_ID)
                     if chat_channel:
@@ -417,12 +548,17 @@ class OmegleHandler:
                                 logger.warning("Tried to delete old ban message, but it was already gone.")
                             finally:
                                 self.state.ban_message_id = None
-                        
+
                         message = (
                             f"@here We are now unbanned on Omegle! Feel free to rejoin the <#{self.config.STREAMING_VC_ID}> VC!"
                         )
                         await chat_channel.send(message)
                         logger.info(f"Sent proactive unbanned notification to channel ID {self.config.CHAT_CHANNEL_ID}.")
+
+                        # SUCCESS: Only change the state AFTER the message is sent.
+                        self.state.is_banned = False
+                        logger.info("Bot state successfully updated to unbanned.")
+
                 except Exception as e:
                     logger.error(f"Failed to send proactive unbanned notification: {e}")
 

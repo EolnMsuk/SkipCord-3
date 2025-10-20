@@ -173,7 +173,7 @@ def get_discord_age(created_at: datetime) -> str:
 
 # A set of commands that should be included in statistical tracking.
 ALLOWED_STATS_COMMANDS = {
-    "!stats", "!skip", "!refresh", "!rules", "!about", "!info", "!whois", "!rtimeouts", "!roles",
+    "!stats", "!skip", "!refresh", "!report", "!rules", "!about", "!info", "!whois", "!rtimeouts", "!roles",
     "!join", "!top", "!commands", "!admin", "!admins", "!owner", "!owners", "!timeouts", "!times",
     "!rhush", "!rsecret", "!hush", "!secret", "!modon", "!modoff", "!banned", "!bans",
     "!clearstats", "!start", "!pause", "!clearwhois", "!msearch", "!mclear", "!mshuffle",
@@ -230,6 +230,7 @@ class BotConfig:
     MOD_MEDIA: bool
     EDGE_DRIVER_PATH: Optional[str]
     EMPTY_VC_PAUSE: bool
+    AUTO_VC_START: bool
     
     # Music Settings
     MUSIC_ENABLED: bool
@@ -293,6 +294,7 @@ class BotConfig:
             MOD_MEDIA=getattr(config_module, 'MOD_MEDIA', True),
             EDGE_DRIVER_PATH=getattr(config_module, 'EDGE_DRIVER_PATH', None),
             EMPTY_VC_PAUSE=getattr(config_module, 'EMPTY_VC_PAUSE', True),
+            AUTO_VC_START=getattr(config_module, 'AUTO_VC_START', False),
 
             # --- Music Settings (with defaults) ---
             MUSIC_ENABLED=getattr(config_module, 'MUSIC_ENABLED', False),
@@ -398,6 +400,7 @@ class BotState:
     recent_role_changes: RoleChangeHistory = field(default_factory=list)
     omegle_disabled_users: Set[int] = field(default_factory=set)
     omegle_enabled: bool = True
+    relay_command_sent: bool = False
     analytics: AnalyticsData = field(default_factory=lambda: {"command_usage": {}, "command_usage_by_user": {}, "violation_events": 0})
     recently_logged_commands: Set[str] = field(default_factory=set)
     last_auto_pause_time: float = 0.0
@@ -427,6 +430,7 @@ class BotState:
 
     # Transient state (not saved to disk)
     ban_message_id: Optional[int] = None
+    music_menu_message_id: Optional[int] = None
     announcement_context: Optional[Any] = None
     play_next_override: bool = False
     stop_after_clear: bool = False
@@ -468,6 +472,7 @@ class BotState:
         return {
             "analytics": self.analytics,
             "omegle_enabled": self.omegle_enabled,
+            "relay_command_sent": self.relay_command_sent,
             "users_received_rules": list(self.users_received_rules),
             "user_violations": self.user_violations,
             "active_timeouts": self.active_timeouts,
@@ -513,7 +518,7 @@ class BotState:
             "active_playlist": [clean_song_dict(s) for s in self.active_playlist],
             "current_song": clean_song_dict(self.current_song),
             "music_volume": self.music_volume,
-            "playlists": self.playlists,
+            "playlists": {p_name: [clean_song_dict(s) for s in songs] for p_name, songs in self.playlists.items()},
             
             # Window geometry state
             "window_size": self.window_size,
@@ -521,6 +526,7 @@ class BotState:
 
             # Omegle ban state
             "is_banned": self.is_banned,
+            "ban_message_id": self.ban_message_id,
         }
 
     @classmethod
@@ -543,6 +549,7 @@ class BotState:
         state.users_with_dms_disabled = set(data.get("users_with_dms_disabled", []))
         state.omegle_disabled_users = set(data.get("omegle_disabled_users", []))
         state.omegle_enabled = data.get("omegle_enabled", True)
+        state.relay_command_sent = data.get("relay_command_sent", False)
 
         state.recent_joins = [(e["id"], e["name"], e["display_name"], datetime.fromisoformat(e["timestamp"])) for e in data.get("recent_joins", [])]
         state.recent_leaves = [(e["id"], e["name"], e["display_name"], datetime.fromisoformat(e["timestamp"]), e["roles"]) for e in data.get("recent_leaves", [])]
@@ -571,6 +578,7 @@ class BotState:
         
         # Omegle ban state
         state.is_banned = data.get("is_banned", False)
+        state.ban_message_id = data.get("ban_message_id", None)
         
         return state
 
@@ -648,3 +656,4 @@ class BotState:
         if len(self.recently_logged_commands) > 5000:
             async with self.cooldown_lock:
                 self.recently_logged_commands.clear()
+
