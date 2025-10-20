@@ -22,11 +22,11 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 ### 🛡️ Advanced Moderation & Automation
 
 * **Camera Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs and applies escalating punishments for repeat violations (VC move -> short timeout -> long timeout).
-* **Automatic Ban Screenshots**: Periodically captures browser screenshots. When a ban is detected, it saves the recent screenshots locally (including VC user info in the filename) and posts them to Discord for review.
+* **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the recent screenshots locally, posts them to Discord for review, and logs details (including users present in the streaming VC) to a dedicated `ban.log` file.
 * **Clean Command Channel**: Automatically deletes old command messages to keep the control channel tidy, while pinning the interactive menus.
 * **Daily Auto-Stats**: Posts a full analytics report daily at a configured UTC time, then automatically clears all statistics for the next day.
 * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
-* **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`.
+* **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression.
 
 <img width="1271" height="538" alt="2" src="https://github.com/user-attachments/assets/3c6de1af-c9a7-4474-a498-dbeaf4af19de" />
 
@@ -132,7 +132,6 @@ The bot keeps administrators informed with a robust, event-driven notification s
 
 ```
 pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spotipy
-
 ```
 
 ### 2. Create a Discord Bot
@@ -261,7 +260,7 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
   * **"WebDriver" Error**: Make sure your Edge browser is fully updated. If automatic detection fails, you can manually download the correct `msedgedriver.exe` for your Edge version from the [Microsoft Edge WebDriver page](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/) and specify its full path (including `msedgedriver.exe`) in `config.py` via the `EDGE_DRIVER_PATH` setting.
   * **Music Doesn't Play**: Confirm that **FFmpeg** is installed and its location is included in your system's PATH environment variable. Check `bot.log` for specific FFmpeg errors.
   * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct and have no extra spaces.
-  * **Other Issues**: Check the `bot.log` file in the bot's folder for detailed error messages.
+  * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages.
 
 ### Donations
 
