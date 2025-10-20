@@ -211,8 +211,8 @@ class HelpView(View):
         cmds = [
             ("⏸️", "👤", "!refresh", discord.ButtonStyle.danger),
             ("⏭️", "👤", "!skip", discord.ButtonStyle.success),
-            ("🚩", "👤", "!report", discord.ButtonStyle.primary),
-            ("ℹ️", "👤", "!info", discord.ButtonStyle.secondary)
+            ("ℹ️", "👤", "!info", discord.ButtonStyle.primary),
+            ("🚩", "👤", "!report", discord.ButtonStyle.secondary)
         ]
         for e, l, c, s in cmds:
             self.add_item(HelpButton(label=l, emoji=e, command=c, style=s, bot_config=bot_config, state=state))
@@ -1395,7 +1395,6 @@ class BotHelper:
         if not has_data:
             await ctx.send("📭 No active timeouts, untimeouts, or disabled users found.")
 
-    # --- MODIFIED AND NEW TIMES REPORT FUNCTIONS ---
 
     async def create_times_report_embed(self) -> Optional[discord.Embed]:
         """
@@ -1457,7 +1456,7 @@ class BotHelper:
         if average_user_count > 0:
             description_lines.append(f"👥 **Average User Count:** {average_user_count}")
 
-        description_lines.append("\n" + "─"*20 + "\n")
+        description_lines.append("")
 
         if top_vc_users:
             for i, (uid, data) in enumerate(top_vc_users):
@@ -1470,7 +1469,7 @@ class BotHelper:
 
         total_hours = math.ceil(total_time_all_users / 3600)
         total_time_str = f"{total_hours} hours"
-        description_lines.append("\n" + "─"*20 + "\n")
+        description_lines.append("")
         description_lines.append(f"⏱ **Total VC Time (All Users):** {total_time_str}")
 
         embed = discord.Embed(

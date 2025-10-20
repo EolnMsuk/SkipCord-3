@@ -242,7 +242,7 @@ async def periodic_state_save() -> None:
     """A background task that periodically saves the bot's state to ensure data is not lost on crash."""
     await save_state_async()
 
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=7)
 async def periodic_geometry_save():
     """Periodically saves the browser window's size and position."""
     if omegle_handler:
@@ -259,7 +259,18 @@ async def periodic_geometry_save():
                         state.window_size = size
                         state.window_position = position
 
-@tasks.loop(seconds=31)
+@tasks.loop(seconds=10)
+async def capture_screenshots_task():
+    """Periodically captures screenshots and stores them in memory for ban detection."""
+    if not state.omegle_enabled or state.is_banned or not omegle_handler:
+        return
+    await omegle_handler.capture_and_store_screenshot()
+
+@capture_screenshots_task.before_loop
+async def before_capture_screenshots_task():
+    await bot.wait_until_ready()
+
+@tasks.loop(seconds=11)
 async def check_ban_status_task():
     """Periodically checks if the Omegle browser has been banned."""
     if not state.omegle_enabled or not omegle_handler:
@@ -1156,6 +1167,8 @@ async def on_ready() -> None:
         if not music_playback_watchdog.is_running(): music_playback_watchdog.start()
         if not check_ban_status_task.is_running():
             check_ban_status_task.start()
+        if not capture_screenshots_task.is_running():
+            capture_screenshots_task.start()
 
         # NEW: Start the auto-delete and times report tasks
         if not auto_delete_old_commands.is_running():
@@ -3184,4 +3197,3 @@ if __name__ == "__main__":
         if 'state' in globals():
             logger.info("Performing final state save..."); asyncio.run(save_state_async())
         logger.info("Shutdown complete")
-

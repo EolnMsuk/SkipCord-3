@@ -5,9 +5,12 @@
 
 import asyncio
 import os
-import time # Added for time.sleep in initialize
+import re
+import base64
+import time
+from datetime import datetime
 from functools import wraps
-from typing import Optional, Union
+from typing import Optional, Union, List, Tuple
 
 import discord
 from discord.ext import commands
@@ -23,6 +26,7 @@ from tools import BotConfig, BotState
 # Constants
 DRIVER_INIT_RETRIES = 2     # Number of times to retry initializing the WebDriver if it fails.
 DRIVER_INIT_DELAY = 5       # Seconds to wait between retry attempts.
+SCREENSHOT_JPEG_QUALITY = 75 # Quality for JPEG screenshots (0-100). 75 is a good balance.
 
 def require_healthy_driver(func):
     """
@@ -88,16 +92,51 @@ class OmegleHandler:
     This includes initializing the browser, navigating, and sending commands.
     """
 
+    async def _set_volume(self, volume_percentage: int = 50) -> bool:
+        """
+        Internal helper to set the volume slider on the page.
+        Returns True on success, False on failure.
+        """
+        logger.info(f"Attempting to set volume to {volume_percentage}%...")
+        try:
+            set_volume_script = f"""
+            var slider = document.getElementById('vol-control');
+            if (slider) {{
+                slider.value = {volume_percentage};
+                var event = new Event('input', {{ bubbles: true }});
+                slider.dispatchEvent(event);
+                console.log('Volume set to {volume_percentage}%');
+                return true;
+            }} else {{
+                console.error('Volume slider #vol-control not found.');
+                return false;
+            }}
+            """
+            volume_set = await asyncio.to_thread(self.driver.execute_script, set_volume_script)
+            if volume_set:
+                logger.info(f"Successfully executed script to set volume to {volume_percentage}%.")
+                return True
+            else:
+                logger.warning("Volume slider element not found via script.")
+                return False
+        except Exception as e:
+            logger.error(f"Error during volume automation: {e}")
+            return False
+
     async def _attempt_send_relay(self) -> bool:
         """
-        Internal helper to send the /relay command.
+        Internal helper to send the /relay command and set the volume.
         It checks if the command has already been sent and updates the state on success.
         Returns True on success, False on failure.
         """
         if not self.state or self.state.relay_command_sent:
             return True  # Already sent, so it's "successful" in a sense.
 
-        logger.info("Attempting to send /relay command...")
+        logger.info("Attempting to send /relay command and set volume...")
+        
+        # Set volume before sending the relay message
+        await self._set_volume()
+
         try:
             chat_input_selector = "textarea.messageInput"
             send_button_xpath = "//div[contains(@class, 'mainText') and text()='Send']"
@@ -217,34 +256,32 @@ class OmegleHandler:
                 logger.info(f"Navigating to {self.config.OMEGLE_VIDEO_URL}...")
                 await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
                 # Add a small wait for the page elements to load after navigation
-                await asyncio.sleep(3.0) # Wait 3 seconds
+                await asyncio.sleep(1.0) # Wait 3 seconds
+
+                # --- [NEW] Add pre-relay skip attempt during initialization ---
+                logger.info("Attempting pre-relay skip during initialization...")
+                try:
+                    keys = getattr(config, "SKIP_COMMAND_KEY", None)
+                    if not keys: keys = ["Escape", "Escape"]
+                    if not isinstance(keys, list): keys = [keys]
+                    
+                    for i, key in enumerate(keys):
+                        script = f"""
+                        var evt = new KeyboardEvent('keydown', {{
+                            bubbles: true, cancelable: true, key: '{key}', code: '{key}'
+                        }});
+                        document.dispatchEvent(evt);
+                        """
+                        await asyncio.to_thread(self.driver.execute_script, script)
+                        logger.info(f"Selenium (init): Sent {key} key event to page.")
+                        if i < len(keys) - 1:
+                            await asyncio.sleep(1)
+                except Exception as e:
+                    logger.warning(f"Pre-relay skip during initialization failed: {e}")
+                # --- End of new block ---
 
                 # --- Set Volume ---
-                logger.info("Attempting to set initial volume...")
-                try:
-                    # Set Volume (e.g., to 50%)
-                    volume_percentage = 50 # Or get from config if you prefer
-                    set_volume_script = f"""
-                    var slider = document.getElementById('vol-control');
-                    if (slider) {{
-                        slider.value = {volume_percentage};
-                        var event = new Event('input', {{ bubbles: true }});
-                        slider.dispatchEvent(event);
-                        console.log('Volume set to {volume_percentage}%');
-                        return true;
-                    }} else {{
-                        console.error('Volume slider #vol-control not found.');
-                        return false;
-                    }}
-                    """
-                    volume_set = await asyncio.to_thread(self.driver.execute_script, set_volume_script)
-                    if volume_set:
-                        logger.info(f"Successfully executed script to set volume to {volume_percentage}%.")
-                    else:
-                        logger.warning("Volume slider element not found via script.")
-
-                except Exception as vol_e:
-                    logger.error(f"Error during post-navigation volume automation: {vol_e}")
+                await self._set_volume()
 
                 # Reset relay flag and attempt to send on startup
                 if self.state:
@@ -318,9 +355,8 @@ class OmegleHandler:
     @require_healthy_driver
     async def custom_skip(self, ctx: Optional[commands.Context] = None) -> bool:
         """
-        Executes a "skip" action. It first ensures the browser is on the correct URL,
-        then simulates key presses to skip the current chat.
-        It will also send the /relay command AFTER the first successful skip of a session.
+        Executes a "skip" action. It first sends the /relay command if needed (e.g., after a refresh),
+        ensures the browser is on the correct URL, then simulates key presses to skip the current chat.
         """
         # --- URL Verification & Redirect (Runs for all calls) ---
         try:
@@ -337,9 +373,9 @@ class OmegleHandler:
             logger.error(f"Failed during pre-skip URL check/redirect: {e}", exc_info=True)
             if ctx:
                 await ctx.send("Error checking browser URL. The browser may be unresponsive.")
-            return False
+            return False # Return False here, as we can't do anything else.
 
-        # --- Standard Skip Logic ---
+        # --- [USER REQUESTED ORDER] 1. Standard Skip Logic ---
         keys = getattr(config, "SKIP_COMMAND_KEY", None)
         if not keys:
             keys = ["Escape", "Escape"]
@@ -371,24 +407,27 @@ class OmegleHandler:
             except Exception as e:
                 logger.error(f"Selenium custom skip failed: {e}")
                 if ctx: await ctx.send("Failed to execute skip command in browser.")
-                return False # Return False immediately on other errors
+                # Don't return yet, still try to send relay/volume
+                skip_successful = False # Ensure it's marked as failed
+                break # Exit retry loop
 
         if not skip_successful:
-            logger.error("Failed to execute custom skip after multiple retries due to stale elements.")
-            if ctx: await ctx.send("Failed to execute skip command after multiple retries.")
-            return False
+            logger.error("Failed to execute custom skip. Will still attempt volume/relay.")
+            # Don't return, as per user's logic to run volume/relay anyway.
 
-        # --- Send /relay (or retry if startup send failed) ---
-        # This helper has a built-in check so it only runs once.
+        # --- [USER REQUESTED ORDER] 2 & 3. Set Volume and Send /relay ---
+        # We run this *after* the skip, as requested.
+        # _attempt_send_relay() already contains _set_volume(), so we just call it.
+        # This helper has a built-in check so it only runs once per "armed" state.
         await self._attempt_send_relay()
 
-        return True # Return True as the skip itself was successful
+        return skip_successful # Return whether the skip (Esc Esc) part was successful
 
     @require_healthy_driver
     async def refresh(self, ctx: Optional[Union[commands.Context, discord.Message, discord.Interaction]] = None) -> bool:
         """
-        Executes a "refresh" action. It first ensures the browser is on the correct URL,
-        then sends the Escape key 4 times to reset the state on the target page.
+        Executes a "refresh" action by sending the F5 key to the browser.
+        This also resets the relay command flag, so /relay is sent on the next skip.
         """
         # --- URL Verification & Redirect (Runs for all calls) ---
         try:
@@ -404,7 +443,7 @@ class OmegleHandler:
                     elif hasattr(ctx, 'send'):
                         await ctx.send(msg_content, delete_after=10)
                 await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.0)
 
         except Exception as e:
             logger.error(f"Failed during pre-refresh URL check/redirect: {e}", exc_info=True)
@@ -417,53 +456,75 @@ class OmegleHandler:
                     await ctx.send(error_msg)
             return False
 
-        # --- Standard Refresh Logic ---
-        for attempt in range(3):
-            try:
-                for i in range(4):
-                    script = f"""
-                    var evt = new KeyboardEvent('keydown', {{
-                        bubbles: true, cancelable: true, key: 'Escape', code: 'Escape'
-                    }});
-                    document.dispatchEvent(evt);
-                    """
-                    await asyncio.to_thread(self.driver.execute_script, script)
-                    logger.info(f"Selenium: Sent Escape key event to page (press {i+1}/4).")
-                    if i < 3:
-                        await asyncio.sleep(0.1) # Small delay between keys
+        # --- F5 Refresh Logic ---
+        try:
+            logger.info("Selenium: Attempting to refresh the page (F5).")
+            # Using driver.refresh() is the standard and most reliable way to simulate F5.
+            await asyncio.to_thread(self.driver.refresh)
+            
+            # On successful refresh, arm the /relay command for the next skip.
+            if self.state:
+                self.state.relay_command_sent = False
+                logger.info("Relay command armed to be sent on the next skip after refresh.")
 
-                logger.info("Selenium: Successfully sent 4 escape key presses for refresh command.")
-                return True
-            except StaleElementReferenceException:
-                logger.warning(f"StaleElementReferenceException on refresh attempt {attempt + 1}. Retrying...")
-                await asyncio.sleep(0.5)
-                continue
-            except Exception as e:
-                logger.error(f"Selenium refresh (escape key press) failed: {e}")
-                if ctx:
-                    error_msg = "Failed to process refresh command in browser."
-                    if isinstance(ctx, discord.Interaction):
-                        if ctx.response.is_done(): await ctx.followup.send(error_msg)
-                        else: await ctx.response.send_message(error_msg)
-                    elif hasattr(ctx, 'send'):
-                        await ctx.send(error_msg)
-                return False
-
-        logger.error("Failed to execute refresh after multiple retries due to stale elements.")
-        if ctx:
-            error_msg = "Failed to execute refresh command after multiple retries."
-            if isinstance(ctx, discord.Interaction):
-                if ctx.response.is_done(): await ctx.followup.send(error_msg)
-                else: await ctx.response.send_message(error_msg)
-            elif hasattr(ctx, 'send'):
-                await ctx.send(error_msg)
-        return False
+            logger.info("Selenium: Page refreshed successfully.")
+            return True
+        except Exception as e:
+            logger.error(f"Selenium page refresh failed: {e}")
+            if ctx:
+                error_msg = "Failed to refresh the browser page."
+                if isinstance(ctx, discord.Interaction):
+                    if ctx.response.is_done(): await ctx.followup.send(error_msg)
+                    else: await ctx.response.send_message(error_msg)
+                elif hasattr(ctx, 'send'):
+                    await ctx.send(error_msg)
+            return False
         
     @require_healthy_driver
     async def report_user(self, ctx: Optional[commands.Context] = None) -> bool:
-        """Finds and clicks the report flag icon, then confirms the report."""
+        """Finds and clicks the report flag icon, confirms the report, and takes a screenshot."""
         try:
-            logger.info("Attempting to report user...")
+            logger.info("Attempting to report user and take screenshot...")
+
+            # --- Screenshot Logic ---
+            if self.config.SS_LOCATION:
+                try:
+                    # Ensure the directory exists
+                    os.makedirs(self.config.SS_LOCATION, exist_ok=True)
+                    
+                    # Create a unique filename with a timestamp and username
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    # Sanitize username for filename
+                    sanitized_username = re.sub(r'[\\/*?:"<>|]', "", ctx.author.name)
+                    filename = f"report-{timestamp}-{sanitized_username}.jpg"
+                    filepath = os.path.join(self.config.SS_LOCATION, filename)
+                    
+                    def capture_and_save_jpeg():
+                        # This CDP command returns a dict {'data': 'base64_string'}
+                        screenshot_data = self.driver.execute_cdp_cmd(
+                            "Page.captureScreenshot",
+                            {"format": "jpeg", "quality": SCREENSHOT_JPEG_QUALITY}
+                        )
+                        # Decode the base64 string into bytes
+                        img_bytes = base64.b64decode(screenshot_data['data'])
+                        # Write the bytes to the file
+                        with open(filepath, "wb") as f:
+                            f.write(img_bytes)
+                        return True # Return True on success
+                    
+                    screenshot_saved = await asyncio.to_thread(capture_and_save_jpeg)
+                    if screenshot_saved:
+                        logger.info(f"Screenshot (JPEG, Q{SCREENSHOT_JPEG_QUALITY}) saved to: {filepath}")
+                        # The line to send the file to ctx is intentionally removed here
+                        # as per your request to only save the file locally.
+                    else:
+                        logger.error("Failed to save screenshot, method returned False.")
+                except Exception as ss_e:
+                    logger.error(f"Failed to take or send screenshot: {ss_e}", exc_info=True)
+                    if ctx:
+                        await ctx.send("⚠️ Failed to take screenshot, but proceeding with report.", delete_after=10)
+            # --- End Screenshot Logic ---
+
 
             # Using a more specific XPath to find the report flag
             report_flag_xpath = "//img[@alt='Report' and contains(@class, 'reportButton')]"
@@ -500,10 +561,44 @@ class OmegleHandler:
                 await ctx.send("❌ Failed to report user. See logs for details.", delete_after=10)
             return False
 
+    async def capture_and_store_screenshot(self) -> None:
+        """
+        Takes a screenshot of the current browser view and stores it in the in-memory buffer.
+        The buffer is capped at 3 screenshots.
+        """
+        if not await self.is_healthy() or not self.state:
+            return
+
+        try:
+            def capture_jpeg_bytes():
+                # This CDP command returns a dict {'data': 'base64_string'}
+                screenshot_data = self.driver.execute_cdp_cmd(
+                    "Page.captureScreenshot",
+                    {"format": "jpeg", "quality": SCREENSHOT_JPEG_QUALITY}
+                )
+                # Decode the base64 string into bytes
+                return base64.b64decode(screenshot_data['data'])
+
+            # Run the blocking screenshot call in a separate thread.
+            screenshot_bytes = await asyncio.to_thread(capture_jpeg_bytes)
+            
+            # Use a lock to safely modify the shared state list.
+            # Reusing an existing lock like cooldown_lock is fine for ensuring atomicity.
+            async with self.state.cooldown_lock:
+                if not hasattr(self.state, 'ban_screenshots'):
+                     self.state.ban_screenshots = []
+                self.state.ban_screenshots.append((time.time(), screenshot_bytes))
+                # Keep the list trimmed to the last 3 screenshots.
+                if len(self.state.ban_screenshots) > 3:
+                    self.state.ban_screenshots.pop(0)
+            
+        except Exception as e:
+            logger.error(f"Failed to capture and store screenshot for ban buffer: {e}")
+
     async def check_for_ban(self) -> None:
         """
-        [NEW] A passive, periodic check for the browser's URL to manage the bot's ban state.
-        It does not navigate or alter the browser state, only reads it.
+        [MODIFIED] A passive, periodic check for the browser's URL to manage the bot's ban state.
+        It now saves buffered screenshots upon detecting a ban and posts them to Discord.
         """
         if not await self.is_healthy():
             # Don't log here to avoid spam; the require_healthy_driver decorator on commands will handle notifications.
@@ -513,9 +608,72 @@ class OmegleHandler:
             current_url = await asyncio.to_thread(lambda: self.driver.current_url)
 
             # --- BAN DETECTION ---
-            # If we see a ban URL and our state is currently unbanned, we've just been banned.
             if "/ban/" in current_url and not self.state.is_banned:
                 logger.warning(f"Proactive ban check detected a ban! URL: {current_url}.")
+
+                # --- [MODIFIED] Save and post buffered screenshots ---
+                if self.config.SS_LOCATION and hasattr(self.state, 'ban_screenshots'):
+                    saved_filepaths = []
+                    try:
+                        # Use a lock to safely read and clear the list.
+                        async with self.state.cooldown_lock:
+                            screenshots_to_save = self.state.ban_screenshots.copy()
+                            self.state.ban_screenshots.clear() # Clear buffer after copying
+
+                        if screenshots_to_save:
+                            os.makedirs(self.config.SS_LOCATION, exist_ok=True)
+                            ban_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                            
+                            # Get VC usernames for filename
+                            vc_usernames_str = "no-users"
+                            try:
+                                guild = self.bot.get_guild(self.config.GUILD_ID)
+                                if guild:
+                                    streaming_vc = guild.get_channel(self.config.STREAMING_VC_ID)
+                                    if streaming_vc and isinstance(streaming_vc, discord.VoiceChannel):
+                                        # Sanitize names and join
+                                        vc_members = [re.sub(r'[\\/*?:"<>|]', "", m.name) for m in streaming_vc.members if not m.bot]
+                                        if vc_members:
+                                            vc_usernames_str = "-".join(vc_members)
+                            except Exception as e:
+                                logger.error(f"Could not get VC usernames for ban screenshot naming: {e}")
+
+                            for i, (capture_time, ss_bytes) in enumerate(screenshots_to_save):
+                                filename = f"ban-{vc_usernames_str}-{ban_timestamp}-{i + 1}.jpg"
+                                filepath = os.path.join(self.config.SS_LOCATION, filename)
+                                
+                                try:
+                                    with open(filepath, "wb") as f:
+                                        f.write(ss_bytes)
+                                    logger.info(f"Saved pre-ban screenshot to: {filepath}")
+                                    saved_filepaths.append(filepath) # Keep track of saved files
+                                except Exception as write_e:
+                                    logger.error(f"Failed to write pre-ban screenshot {filename}: {write_e}")
+                            
+                            logger.info(f"Successfully saved {len(screenshots_to_save)} pre-ban screenshots.")
+
+                            # --- [NEW] Post screenshots to channel ---
+                            stats_channel_id = self.config.AUTO_STATS_CHAN or self.config.CHAT_CHANNEL_ID
+                            stats_channel = self.bot.get_channel(stats_channel_id)
+                            if stats_channel and saved_filepaths:
+                                try:
+                                    await stats_channel.send("@here The screenshots below were taken before the most recent ban:")
+                                    files_to_send = [discord.File(fp) for fp in saved_filepaths]
+                                    await stats_channel.send(files=files_to_send)
+                                    logger.info(f"Posted {len(saved_filepaths)} pre-ban screenshots to channel ID {stats_channel_id}.")
+                                except discord.Forbidden:
+                                    logger.error(f"Missing permissions to post pre-ban screenshots in channel ID {stats_channel_id}.")
+                                except Exception as post_e:
+                                    logger.error(f"Failed to post pre-ban screenshots: {post_e}")
+                            elif not stats_channel:
+                                logger.error(f"AUTO_STATS_CHAN (ID: {stats_channel_id}) not found for posting ban screenshots.")
+                            # --- End [NEW] ---
+                        else:
+                            logger.warning("Ban detected, but screenshot buffer was empty.")
+                    except Exception as ss_e:
+                        logger.error(f"An error occurred while saving/posting pre-ban screenshots: {ss_e}")
+                # --- End [MODIFIED] ---
+
                 self.state.is_banned = True # Set state to prevent re-announcements.
                 try:
                     chat_channel = self.bot.get_channel(self.config.CHAT_CHANNEL_ID)

@@ -208,6 +208,7 @@ class BotConfig:
     PUNISHMENT_VC_ID: int
     OMEGLE_VIDEO_URL: str
     EDGE_USER_DATA_DIR: str
+    SS_LOCATION: Optional[str]
 
     # Optional Settings (with defaults)
     ALT_VC_ID: List[int]
@@ -272,6 +273,7 @@ class BotConfig:
             PUNISHMENT_VC_ID=getattr(config_module, 'PUNISHMENT_VC_ID', None),
             OMEGLE_VIDEO_URL=getattr(config_module, 'OMEGLE_VIDEO_URL', None),
             EDGE_USER_DATA_DIR=getattr(config_module, 'EDGE_USER_DATA_DIR', None),
+            SS_LOCATION=getattr(config_module, 'SS_LOCATION', 'screenshots'),
 
             # --- Optional Settings (with defaults) ---
             ALT_VC_ID=getattr(config_module, 'ALT_VC_ID', []),
@@ -357,6 +359,7 @@ AnalyticsData = Dict[str, Union[Dict[str, int], Dict[int, Dict[str, int]], int]]
 VcTimeData = Dict[int, Dict[str, Any]]
 ActiveVcSessions = Dict[int, float]
 Playlists = Dict[str, List[Dict[str, Any]]]
+ScreenshotBuffer = List[Tuple[float, bytes]]
 
 @dataclass
 class BotState:
@@ -436,6 +439,7 @@ class BotState:
     stop_after_clear: bool = False
     leave_buffer: List[discord.Member] = field(default_factory=list, init=False)
     leave_batch_task: Optional[asyncio.Task] = field(default=None, init=False)
+    ban_screenshots: ScreenshotBuffer = field(default_factory=list, init=False)
 
     def __post_init__(self):
         if self.config:
@@ -656,4 +660,3 @@ class BotState:
         if len(self.recently_logged_commands) > 5000:
             async with self.cooldown_lock:
                 self.recently_logged_commands.clear()
-
