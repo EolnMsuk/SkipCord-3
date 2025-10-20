@@ -50,6 +50,9 @@ EMPTY_VC_PAUSE = True
 # If True, the bot will automatically start/skip the Omegle stream when the first user with a camera joins the STREAMING_VC_ID.
 AUTO_VC_START = False
 
+# Location of folder for screenshots (reports and bans)
+SS_LOCATION = "C:\\Users\\username\\Desktop\\screenshots"
+
 # The FULL path to your Microsoft Edge "Profile" folder. This is crucial for the 
 # browser to remember settings, stay logged into sites, and appear less like a bot.
 #
@@ -173,6 +176,7 @@ GLOBAL_HOTKEY_MVOLDOWN = "["            # The key to trigger the !mvoldown. Uses
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = "]"              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
