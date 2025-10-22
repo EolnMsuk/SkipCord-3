@@ -13,6 +13,7 @@ CHAT_CHANNEL_ID = 0    # PASTE the ID of your main chat channel. The bot will po
 COMMAND_CHANNEL_ID = 0 # PASTE the ID of the text channel where users will type commands like !skip.
 STREAMING_VC_ID = 0    # PASTE the ID of the voice channel where the Omegle stream happens and camera rules are enforced.
 PUNISHMENT_VC_ID = 0   # PASTE the ID of a "jail" voice channel. Users are moved here for their first camera violation.
+LOG_GC = 0             # PASTE the ID of the text channel where the bot will put error logs for music and startup for bot
 
 # (Optional)
 ALT_VC_ID = None             # (Optional) PASTE the ID of a SECOND voice channel where camera rules should also be enforced. Set to None if you don't have one.
@@ -176,6 +177,7 @@ GLOBAL_HOTKEY_MVOLDOWN = "["            # The key to trigger the !mvoldown. Uses
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = "]"              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
