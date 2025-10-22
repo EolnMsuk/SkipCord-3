@@ -39,7 +39,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Automatic Management**: The bot joins the VC when users with cameras are present and leaves when it's empty to conserve resources.
 * **Dynamic Menu**: The interactive music control menu updates in real-time to show the current song, playback status, volume, mode, and queue length.
 
-<img width="420" height="282" alt="3" src="https://github.com/user-attachments/assets/e54fe401-1d86-4d06-8772-b966c38b3b75" />
+<img width="420" height="282" alt="3" src="https://github.com/user-attachments/assets/e54fe401-1d86-4d06-8772-b966b38b3b75" />
 
 ### 📊 Persistent State & Analytics
 
@@ -166,9 +166,9 @@ To enable playing songs, albums, and playlists from Spotify links, you need API 
 ```
 # .env file
 
-BOT\_TOKEN=YOUR\_DISCORD\_BOT\_TOKEN\_HERE
-SPOTIPY\_CLIENT\_ID=YOUR\_SPOTIFY\_CLIENT\_ID\_HERE
-SPOTIPY\_CLIENT\_SECRET=YOUR\_SPOTIFY\_CLIENT\_SECRET\_HERE
+BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
+SPOTIPY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID_HERE
+SPOTIPY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET_HERE
 ````
 
 > **Note:** If you are not setting up Spotify, you can leave the `SPOTIPY` lines blank, but the `BOT_TOKEN` is required.
