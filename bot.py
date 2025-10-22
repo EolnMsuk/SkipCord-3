@@ -105,7 +105,7 @@ MUSIC_METADATA_CACHE = {} # In-memory cache for song metadata (artist, title, et
 
 # --- YT-DLP / FFMPEG CONFIG ---
 YDL_OPTIONS = {
-    'format': 'bestaudio/best',
+    'format': 'bestaudio[ext=m4a]/bestaudio/best', # Prefer m4a if available
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
     'restrictfilenames': True,
     'extract_flat': True,
@@ -117,10 +117,15 @@ YDL_OPTIONS = {
     'default_search': 'auto',
     'source_address': '0.0.0.0',
     'no_playlist_index': True,
-    'yes_playlist': True, # Add this more forceful line
+    'yes_playlist': True,
 }
-FFMPEG_OPTIONS = {
+
+FFMPEG_OPTIONS_STREAM = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn -loglevel debug -nostdin' # Changed error to debug for more info if needed
+}
+
+FFMPEG_OPTIONS_LOUDNORM = {
     'options': '-vn -loglevel error -af "loudnorm=I=-16:LRA=11:tp=-1.5"'
 }
 
@@ -233,9 +238,15 @@ async def load_state_async() -> None:
         omegle_handler.state = state
 
 # Initialize the helper class AFTER the initial state object is created but BEFORE it might be replaced by `load_state_async`.
-# Pass the play_next_song function to the helper so it can be called from views.
-helper = BotHelper(bot, state, bot_config, save_state_async, lambda: asyncio.create_task(play_next_song()))
-
+# Pass the play_next_song function and omegle_handler to the helper.
+helper = BotHelper(
+    bot,
+    state,
+    bot_config,
+    save_state_async,
+    lambda: asyncio.create_task(play_next_song()),
+    omegle_handler=omegle_handler # --- FIX: Pass omegle_handler ---
+)
 
 @tasks.loop(minutes=14)
 async def periodic_state_save() -> None:
@@ -252,9 +263,9 @@ async def periodic_geometry_save():
             # This check prevents saving geometry when the window is minimized.
             # Minimized windows can return negative positions like (-32000, -32000).
             if position.get('x', -1) >= 0 and position.get('y', -1) >= 0:
-                # Use a lock to prevent race conditions during state updates
-                async with state.cooldown_lock:
-                    # Only update if the values have changed to reduce write overhead
+                # Use the moderation_lock, as this is part of the Omegle state
+                async with state.moderation_lock:  # <--- FIXED
+                    # Only update if the values have changed
                     if state.window_size != size or state.window_position != position:
                         state.window_size = size
                         state.window_position = position
@@ -282,6 +293,19 @@ async def check_ban_status_task():
 @check_ban_status_task.before_loop
 async def before_check_ban_status_task():
     await bot.wait_until_ready()
+
+# --- [NEW TASK] ---
+@tasks.loop(seconds=31)
+async def periodic_checkbox_clicker():
+    """Periodically checks for and clicks a checkbox on the page."""
+    if not state.omegle_enabled or not omegle_handler:
+        return
+    await omegle_handler.find_and_click_checkbox()
+
+@periodic_checkbox_clicker.before_loop
+async def before_periodic_checkbox_clicker():
+    await bot.wait_until_ready()
+# --- [END NEW TASK] ---
 
 # --- NEW: Function to dynamically update the music menu ---
 async def update_music_menu():
@@ -407,16 +431,19 @@ async def global_skip() -> None:
         logger.error("Guild not found for global skip.")
 
 async def global_mskip() -> None:
-    if not state.music_enabled or not bot.voice_client_music or not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()):
-        logger.warning("Global mskip hotkey pressed, but nothing is playing or music is disabled.")
-        return
+    # --- FIX: Moved checks inside the lock ---
     async with state.music_lock:
+        if not state.music_enabled or not bot.voice_client_music or not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()):
+            logger.warning("Global mskip hotkey pressed, but nothing is playing or music is disabled.")
+            return
+
         if state.music_mode == 'loop':
             state.music_mode = 'shuffle'
             logger.info("Loop mode disabled via global hotkey skip. Switched to Shuffle.")
         state.is_music_paused = False
         bot.voice_client_music.stop()
     logger.info("Executed global music skip command via hotkey.")
+    # --- END FIX ---
 
 async def global_mpause() -> None:
     """Executes a music pause/resume command triggered by a global hotkey."""
@@ -608,13 +635,13 @@ async def scan_and_shuffle_music() -> int:
 
     return len(state.shuffle_queue)
 
-
 async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
     """
     Internal function to handle the actual playback of a song.
+    Lets discord.py handle YouTube extraction for stability.
     """
     async with state.music_lock:
-        state.is_processing_song = True
+        state.is_processing_song = True 
 
     if not state.music_enabled:
         async with state.music_lock:
@@ -624,7 +651,7 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
         return
 
     if not bot.voice_client_music or not bot.voice_client_music.is_connected():
-        logger.error("Playback failed: Bot is not connected to a voice channel. Halting playback attempt.")
+        logger.error("Playback failed: Bot not connected. Halting.")
         async with state.music_lock:
             state.is_music_playing = False
             state.current_song = None
@@ -635,58 +662,89 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
         source = None
         song_path_or_url = song_info['path']
         song_display_name = song_info['title']
+        is_stream = song_info.get('is_stream', False)
+        
         async with state.music_lock:
             volume = state.music_volume
 
         logger.debug(f"Attempting to process song: {song_info}")
 
-        if song_info.get('is_stream', False):
+        # --- FFMPEG OPTIONS (Dynamic Reconnect) ---
+        # Base options safe for all network connections
+        before_options = '-reconnect 1 -reconnect_delay_max 5'
+        ffmpeg_options = {
+            'options': '-vn -loglevel error -nostdin' 
+        }
+
+        if is_stream:
             logger.info(f"Processing as a stream: {song_display_name}")
-            single_song_ydl_opts = YDL_OPTIONS.copy()
-            single_song_ydl_opts['extract_flat'] = False
-            info = None # Initialize info to None
-
+            # Let discord.py handle extraction. It will get a URL internally.
+            # We add reconnect flags *before* discord.py starts FFmpeg.
+            # We CANNOT know in advance if discord.py will get an HLS url,
+            # so we OMIT -reconnect_streamed here for safety with direct URLs.
+            # Basic -reconnect should still help.
+            ffmpeg_options['before_options'] = before_options 
+            
             try:
-                with yt_dlp.YoutubeDL(single_song_ydl_opts) as ydl:
-                    logger.debug(f"Executing yt-dlp extract_info for: {song_path_or_url}")
-                    info = await asyncio.to_thread(ydl.extract_info, song_path_or_url, download=False)
-            except Exception as ydl_error:
-                # This will catch errors specifically from yt-dlp and log them.
-                logger.error(f"yt-dlp failed to extract info for {song_path_or_url}: {ydl_error}", exc_info=True)
-                raise ValueError("yt-dlp extraction failed.") # Raise a new error to be caught by the main handler
+                # Pass the WEB PAGE URL directly. Do NOT pass ytdl_options.
+                source = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(
+                        song_path_or_url, 
+                        **ffmpeg_options
+                    ),
+                    volume=volume
+                )
+                # Attempt to get a better title if discord.py found one
+                if hasattr(source, 'title') and source.title:
+                     song_display_name = source.title
+                     async with state.music_lock:
+                         if state.current_song:
+                             state.current_song['title'] = song_display_name
+                             
+            except Exception as e:
+                logger.error(f"Failed to create stream audio source for {song_path_or_url}: {e}", exc_info=True)
+                # Attempt fallback without before_options if reconnect fails badly? Might be YouTube blocking.
+                try:
+                    logger.warning("Retrying stream without any before_options...")
+                    fallback_ffmpeg_options = {'options': '-vn -loglevel error -nostdin'}
+                    source = discord.PCMVolumeTransformer(
+                        discord.FFmpegPCMAudio(
+                            song_path_or_url, 
+                            **fallback_ffmpeg_options
+                        ),
+                        volume=volume
+                    )
+                    if hasattr(source, 'title') and source.title: song_display_name = source.title
 
-            if info and 'entries' in info and info['entries']:
-                info = info['entries'][0]
+                except Exception as fallback_e:
+                     logger.critical(f"Fallback stream creation also failed: {fallback_e}")
+                     raise ValueError("discord.FFmpegPCMAudio failed.")
 
-            # Check if info dictionary exists before trying to access it
-            if not info:
-                raise ValueError("yt-dlp returned no information for the URL.")
-
-            audio_url = info.get('url')
-            if not audio_url:
-                raise ValueError("yt-dlp failed to extract a playable audio URL.")
-
-            logger.debug(f"Extracted audio URL successfully. Creating FFmpegPCMAudio source.")
-            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), volume=volume)
-            song_display_name = info.get('title', song_display_name)
-            async with state.music_lock:
-                if state.current_song:
-                    state.current_song['title'] = song_display_name
         else:
+            # Handling local files (Unchanged)
             logger.info(f"Processing as a local file: '{os.path.basename(song_path_or_url)}'.")
             if state.config.NORMALIZE_LOCAL_MUSIC:
-                logger.debug("Normalizing local file audio with loudnorm.")
-                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, **FFMPEG_OPTIONS), volume=volume)
+                logger.debug("Normalizing local file audio.")
+                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, **FFMPEG_OPTIONS_LOUDNORM), volume=volume)
             else:
                 logger.debug("Playing local file without normalization.")
                 source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, options="-vn -loglevel error"), volume=volume)
 
+        if not source:
+             raise ValueError("Audio source creation failed.")
+
         logger.debug("Audio source created successfully. Attempting to play.")
-        bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_song(e), bot.loop))
+        await asyncio.sleep(0.5) 
+        bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(after_playback_handler(e), bot.loop))
+        
+        # --- FIX: Set is_processing_song to False *after* play starts ---
+        async with state.music_lock:
+            state.is_processing_song = False
 
         logger.info(f"Now playing: {song_display_name}")
         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=song_display_name))
 
+        # --- Announcement Logic (Unchanged) ---
         announcement_ctx = None
         async with state.music_lock:
             if state.announcement_context:
@@ -698,10 +756,10 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
         elif bot_config.MUSIC_DEFAULT_ANNOUNCE_SONGS and ctx:
             await ctx.send(f"🎵 Now Playing: **{song_display_name}**")
 
-        # NEW: Trigger menu update after a song starts
         asyncio.create_task(update_music_menu())
 
     except Exception as e:
+        # --- Error Handling (Unchanged) ---
         logger.critical("CRITICAL FAILURE IN _play_song.", exc_info=True)
         logger.error(f"--> Failed Song Info: {song_info}")
         if ctx:
@@ -711,8 +769,21 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
             state.is_music_playing = False
             state.is_processing_song = False
 
-        # NEW: Trigger menu update on failure as well to clear the "Now Playing"
         asyncio.create_task(update_music_menu())
+        asyncio.create_task(play_next_song())
+
+# --- REVERTED after_playback_handler ---
+async def after_playback_handler(error=None):
+    """Logs playback errors and schedules the next song."""
+    if error:
+        # Log the error object itself, which might contain useful info
+        logger.error(f"FFmpeg process finished with an error object: {error}", exc_info=error)
+
+    # Always schedule play_next_song to run, even if there was an error,
+    # as play_next_song handles the logic for moving on.
+    # Use create_task to ensure it runs correctly in the event loop.
+    asyncio.create_task(play_next_song())
+
 
 async def start_music_playback():
     """A locked, centralized function to prevent race conditions when starting music."""
@@ -759,8 +830,9 @@ async def play_next_song(error=None, is_recursive_call=False):
         logger.error(f"Error in music player callback: {error}")
 
     # FIX 1: A song has finished. We are no longer processing the *previous* song.
-    async with state.music_lock:
-        state.is_processing_song = False
+    # --- THIS LINE WAS REMOVED ---
+    # async with state.music_lock:
+    #     state.is_processing_song = False
 
     song_to_play_info = None
     ctx_for_playback = None
@@ -773,6 +845,7 @@ async def play_next_song(error=None, is_recursive_call=False):
             state.is_music_playing = False
             state.is_music_paused = False
             state.current_song = None
+            state.is_processing_song = False # --- FIX: Added flag reset ---
             logger.info("Playback intentionally stopped after queue clear.")
             await bot.change_presence(activity=None)
             # NEW: Update menu to show nothing is playing
@@ -785,6 +858,7 @@ async def play_next_song(error=None, is_recursive_call=False):
         async with state.music_lock: # Need a lock just to update state safely
             state.is_music_playing = False
             state.current_song = None
+            state.is_processing_song = False # --- FIX: Added flag reset ---
         return
 
     # Lock to safely read and modify the queue state
@@ -812,14 +886,23 @@ async def play_next_song(error=None, is_recursive_call=False):
 
             if user_queue:
                 # Priority 2: Process the user-added queue based on the current mode.
+                
+                # --- FIX: Re-implemented shuffle mode to be race-safe ---
                 if state.music_mode == 'shuffle':
                     logger.info("Shuffle mode active. Picking a random song from the user queue.")
-                    len_active = len(state.active_playlist)
-                    chosen_index = random.randrange(len(user_queue))
-                    if chosen_index < len_active:
-                        song_to_play_info = state.active_playlist.pop(chosen_index)
-                    else:
-                        song_to_play_info = state.search_queue.pop(chosen_index - len_active)
+                    # 1. Pick a random song object
+                    song_to_play_info = random.choice(user_queue)
+                    
+                    # 2. Remove it by identity
+                    try:
+                        state.active_playlist.remove(song_to_play_info)
+                    except ValueError:
+                        try:
+                            state.search_queue.remove(song_to_play_info)
+                        except ValueError:
+                            logger.error("Consistency error: Could not find the shuffled chosen song in any queue to remove it.")
+                            song_to_play_info = None # Will cause fallback to local
+                # --- END FIX ---
 
                 elif state.music_mode == 'alphabetical':
                     logger.info("Alphabetical mode active. Picking the next song by title from the user queue.")
@@ -858,6 +941,8 @@ async def play_next_song(error=None, is_recursive_call=False):
     if needs_library_scan:
         if is_recursive_call:
             logger.error("Recursive call to play_next_song detected after a failed library scan. Halting to prevent infinite loop.")
+            async with state.music_lock:
+                state.is_processing_song = False # --- FIX: Added flag reset ---
             return
         logger.info("Local music queue is empty. Rescanning and reshuffling library...")
         await scan_and_shuffle_music()
@@ -880,6 +965,7 @@ async def play_next_song(error=None, is_recursive_call=False):
             state.is_music_playing = False
             state.is_music_paused = False
             state.current_song = None
+            state.is_processing_song = False # --- FIX: Added flag reset ---
         logger.warning("Music playback finished. All queues and local library are empty.")
         await bot.change_presence(activity=None)
         # NEW: Update menu to show nothing is playing
@@ -1183,7 +1269,13 @@ async def on_ready() -> None:
             logger.info("Daily auto-stats task started.")
 
         if state.omegle_enabled:
-            if not await omegle_handler.initialize():
+            if await omegle_handler.initialize():
+                # --- [NEW TASK START] ---
+                if not periodic_checkbox_clicker.is_running():
+                    periodic_checkbox_clicker.start()
+                    logger.info("Periodic checkbox clicker task started (post-browser launch).")
+                # --- [END NEW TASK START] ---
+            else:
                 logger.critical("Selenium initialization failed.")
         else:
             logger.warning("Omegle is disabled on startup. Skipping browser initialization.")
@@ -1565,7 +1657,7 @@ async def on_message(message: discord.Message) -> None:
 
 # --- Menu Update Task ---
 
-@tasks.loop(minutes=60)
+@tasks.loop(minutes=721)
 async def periodic_menu_update() -> None:
     try:
         guild = bot.get_guild(bot_config.GUILD_ID)
@@ -1926,6 +2018,9 @@ async def disable_omegle(ctx):
 
     state.omegle_enabled = False
     await omegle_handler.close()
+    
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
     logger.warning(f"Omegle features DISABLED by {ctx.author.name}")
     await ctx.send("✅ Omegle features have been **DISABLED**. The browser is closed and the Omegle help menu will no longer be posted.")
@@ -1945,6 +2040,9 @@ async def enable_omegle(ctx):
         await ctx.send("❌ **Critical Error:** Failed to launch the browser. Please check the logs.")
         state.omegle_enabled = False # Revert state on failure
         return
+
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
     logger.warning(f"Omegle features ENABLED by {ctx.author.name}")
     await ctx.send("✅ Omegle features have been **ENABLED**. The browser is running and the Omegle help menu will now be posted periodically.")
@@ -2146,8 +2244,14 @@ async def msearch(ctx, *, query: str):
                     while results:
                         # Add the tracks from the current page
                         tracks_to_search.extend(item['track'] for item in results['items'] if item['track'])
-                        # Check if there is a next page and fetch it
-                        if results['next']:
+                        
+                        # --- FIX: Enforce a hard limit on playlist tracks ---
+                        if len(tracks_to_search) >= 50: # Limit set to 50
+                            logger.warning(f"Spotify playlist processing limit (50) reached. Truncating list.")
+                            tracks_to_search = tracks_to_search[:50]
+                            results = None # Stop the loop
+                        # --- END FIX ---
+                        elif results['next']:
                             # The sp.next() function is a helper that gets the next page of results
                             results = sp.next(results)
                         else:
@@ -2210,6 +2314,9 @@ async def msearch(ctx, *, query: str):
                 was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
 
         response_msg = f"✅ Added **{added_count}** songs to the queue from the Spotify link."
+        # --- FIX: Notify user if playlist was truncated ---
+        if '/playlist/' in clean_query and len(youtube_queries) == 50 and added_count <= 50:
+             response_msg = f"✅ Added **{added_count}** songs from the first 50 tracks of the Spotify playlist."
         if skipped_count > 0:
             response_msg += f" ({skipped_count} duplicates were skipped)."
         await status_msg.edit(content=response_msg)
@@ -2340,7 +2447,10 @@ async def msearch(ctx, *, query: str):
             super().__init__(timeout=180.0)
             self.hits, self.author, self.query, self.is_Youtube, self.youtube_page = hits, author, query, is_Youtube, youtube_page
             self.current_page, self.page_size = 0, 23
+            # --- FIX: Corrected calculation ---
             self.total_pages = (len(self.hits) + self.page_size - 1) // self.page_size
+            self.total_pages = max(1, self.total_pages) # Ensure at least 1 page
+            # --- END FIX ---
             self.message = None
             self.update_components()
 
@@ -2710,6 +2820,8 @@ async def modoff(ctx):
     async with state.vc_lock: state.vc_moderation_active = False
     logger.warning(f"VC Moderation DISABLED by {ctx.author.name}")
     await ctx.send("🛡️ VC Moderation has been temporarily **DISABLED**.")
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
 @bot.command(name='modon')
 @require_allowed_user()
@@ -2718,30 +2830,41 @@ async def modon(ctx):
     async with state.vc_lock: state.vc_moderation_active = True
     logger.warning(f"VC Moderation ENABLED by {ctx.author.name}")
     await ctx.send("🛡️ VC Moderation has been **ENABLED**.")
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
 @bot.command(name='disablenotifications')
 @require_allowed_user()
 @handle_errors
 async def disablenotifications(ctx):
     """Disables certain server event notifications."""
-    if not state.notifications_enabled:
-        await ctx.send("❌ Notifications are already disabled.", delete_after=10)
-        return
-    state.notifications_enabled = False
+    async with state.moderation_lock: # <-- ADD LOCK
+        if not state.notifications_enabled:
+            await ctx.send("❌ Notifications are already disabled.", delete_after=10)
+            return
+        state.notifications_enabled = False # <-- NOW SAFE
+
     await ctx.send("✅ Notifications for unbans, leaves, kicks, and timeout removals have been **DISABLED**.")
     logger.info(f"Notifications DISABLED by {ctx.author.name}")
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
 @bot.command(name='enablenotifications')
 @require_allowed_user()
 @handle_errors
 async def enablenotifications(ctx):
     """Enables certain server event notifications."""
-    if state.notifications_enabled:
-        await ctx.send("✅ Notifications are already enabled.", delete_after=10)
-        return
-    state.notifications_enabled = True
+    async with state.moderation_lock: # <-- ADD LOCK
+        if state.notifications_enabled:
+            await ctx.send("✅ Notifications are already enabled.", delete_after=10)
+            return
+        state.notifications_enabled = True # <-- NOW SAFE
+
     await ctx.send("✅ Notifications for unbans, leaves, kicks, and timeout removals have been **ENABLED**.")
     logger.info(f"Notifications ENABLED by {ctx.author.name}")
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
+
 
 @bot.command(name='moff')
 @require_admin_preconditions()
@@ -2777,6 +2900,8 @@ async def moff(ctx):
     await ctx.send("❌ Music features have been **DISABLED** and the player has been disconnected.")
     # NEW: Update the menu to reflect the disabled state (will likely just do nothing, which is fine)
     asyncio.create_task(update_music_menu())
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
 
 @bot.command(name='mon')
@@ -2793,6 +2918,8 @@ async def mon(ctx):
     await ctx.send("✅ Music features have been **ENABLED**. Connecting to voice...")
 
     await start_music_playback()
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
 
 @bot.command(name='disable')
@@ -2814,6 +2941,8 @@ async def disable(ctx, user: discord.User):
         state.omegle_disabled_users.add(user.id)
     await ctx.send(f"✅ User {user.mention} has been **disabled** from using any commands.")
     logger.info(f"User {user.name} disabled from all commands by {ctx.author.name}.")
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
 
 @bot.command(name='enable')
@@ -2830,6 +2959,8 @@ async def enable(ctx, user: discord.User):
         state.omegle_disabled_users.remove(user.id)
     await ctx.send(f"✅ User {user.mention} has been **re-enabled** and can use commands again.")
     logger.info(f"User {user.name} re-enabled for all commands by {ctx.author.name}.")
+    # --- ADDED SAVE ---
+    asyncio.create_task(save_state_async())
 
 
 @bot.command(name='ban')
@@ -3055,6 +3186,28 @@ async def unbanall(ctx):
         response_message += f"\n\n❌ **Failed to unban:**\n" + "\n".join(f"- {f}" for f in failures)
 
     await confirm_msg.edit(content=response_message)
+
+
+# --- [NEW COMMAND] ---
+@bot.command(name='role')
+@require_admin_preconditions()
+@handle_errors
+async def role_members(ctx, role: discord.Role):
+    """Lists all members in a specified role."""
+    await helper.show_role_members(ctx, role)
+
+@role_members.error
+async def role_members_error(ctx, error: Exception) -> None:
+    if isinstance(error, commands.RoleNotFound):
+        await ctx.send(f"Could not find a role matching: `{error.argument}`")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Usage: `!role <@role or role_name or role_id>`")
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.send("⛔ You do not have permission to use this command.", delete_after=10)
+    else:
+        logger.error(f"Error in role command: {error}", exc_info=True)
+        await ctx.send("An unexpected error occurred.")
+# --- [END NEW COMMAND] ---
 
 
 # --- Commands Delegated to BotHelper ---

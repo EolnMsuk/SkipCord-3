@@ -24,6 +24,8 @@ from tools import (
     handle_errors,
     format_duration,
 )
+# --- FIX: Import OmegleHandler ---
+from omegle import OmegleHandler
 
 def format_departure_time(duration: timedelta) -> str:
     """
@@ -88,10 +90,16 @@ def create_message_chunks(
 
     return chunks
 
-async def _button_callback_handler(interaction: discord.Interaction, command: str, bot_config: BotConfig, state: BotState) -> None:
-    """A generic handler for button presses, including permissions and cooldowns."""
+async def _button_callback_handler(interaction: discord.Interaction, command: str, helper: 'BotHelper') -> None:
+    """
+    A generic handler for button presses, including permissions and cooldowns.
+    --- FIX: Now calls functions directly instead of invoking commands via fake messages. ---
+    """
     try:
         user_id = interaction.user.id
+        bot_config = helper.bot_config
+        state = helper.state
+
         # Permission Check (Channel)
         if user_id not in bot_config.ALLOWED_USERS and interaction.channel.id != bot_config.COMMAND_CHANNEL_ID:
             await interaction.response.send_message(f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>", ephemeral=True)
@@ -108,106 +116,112 @@ async def _button_callback_handler(interaction: discord.Interaction, command: st
                         await interaction.response.send_message(f"{interaction.user.mention}, wait {int(time_left)}s before using another button.", ephemeral=True)
                         state.button_cooldowns[user_id] = (last_used, True)
                     else:
-                        # If already warned, just defer silently
                         try:
                             await interaction.response.defer(ephemeral=True, thinking=False)
                         except discord.InteractionResponded:
-                            pass # Already deferred, maybe by another process
+                            pass
                     return
-            # Update cooldown timestamp
             state.button_cooldowns[user_id] = (current_time, False)
 
-        # Defer first (ephemeral so only user sees "Thinking...")
+        # Defer first (ephemeral)
         try:
             await interaction.response.defer(ephemeral=True, thinking=False)
         except discord.InteractionResponded:
              logger.warning("Interaction already responded to before deferral in _button_callback_handler.")
-             pass # Interaction might have already been deferred or responded to
+             pass
 
-
-        # --- NEW: Send public announcement message ---
+        # Send public announcement message
         try:
-            # Construct the announcement message
             announcement_content = f"{interaction.user.mention} used `{command}`"
-            # Send it to the same channel the button was clicked in
             await interaction.channel.send(announcement_content)
             logger.info(f"Announced button use: {interaction.user.name} used {command}")
         except discord.Forbidden:
              logger.warning(f"Missing permissions to send announcement message in #{interaction.channel.name}")
         except Exception as e:
              logger.error(f"Failed to send button usage announcement: {e}")
-        # --- END NEW ---
 
+        # --- FIX: Directly call corresponding helper/handler methods ---
+        try:
+            # Create a simplified mock context usable by most commands
+            mock_ctx = type('obj', (object,), {
+                'author': interaction.user,
+                'channel': interaction.channel,
+                'send': interaction.channel.send, # Use channel.send for public replies
+                'bot': helper.bot,
+                'guild': interaction.guild,
+                'message': interaction.message # Include message for potential reference
+            })()
 
-        # Find and Invoke Command
-        cmd_name = command.lstrip("!")
-        command_obj = interaction.client.get_command(cmd_name)
-        if command_obj:
-            # Create a fake message object that mimics a real command invocation
-            # Send it temporarily so context can be created, then delete it.
-            fake_message = None
+            if command == "!skip":
+                await helper.omegle_handler.custom_skip(mock_ctx) # Pass mock_ctx
+            elif command == "!refresh":
+                await helper.omegle_handler.refresh(mock_ctx) # Pass mock_ctx
+            elif command == "!report":
+                await helper.omegle_handler.report_user(mock_ctx) # Pass mock_ctx
+            elif command == "!info":
+                await helper.show_info(mock_ctx)
+            elif command == "!mpauseplay":
+                 cmd_obj = helper.bot.get_command("mpauseplay")
+                 if cmd_obj:
+                     # --- FIX: Corrected call ---
+                     await cmd_obj.callback(mock_ctx)
+                 else: logger.error("Could not find !mpauseplay command object for button.")
+            elif command == "!mskip":
+                 cmd_obj = helper.bot.get_command("mskip")
+                 if cmd_obj:
+                     # --- FIX: Corrected call ---
+                     await cmd_obj.callback(mock_ctx)
+                 else: logger.error("Could not find !mskip command object for button.")
+            elif command == "!mshuffle":
+                 cmd_obj = helper.bot.get_command("mshuffle")
+                 if cmd_obj:
+                     # --- FIX: Corrected call ---
+                     await cmd_obj.callback(mock_ctx)
+                 else: logger.error("Could not find !mshuffle command object for button.")
+            elif command == "!mclear":
+                # confirm_and_clear_music_queue was already updated to handle Interaction or Context
+                await helper.confirm_and_clear_music_queue(interaction)
+            else:
+                logger.warning(f"Button pressed for unhandled command: {command}")
+                await interaction.followup.send("This button action is not yet implemented.", ephemeral=True)
+
+        except Exception as invoke_err:
+            logger.error(f"Error directly calling function for command '{command}' from button: {invoke_err}", exc_info=True)
             try:
-                fake_message = await interaction.channel.send(f"Processing {command} for {interaction.user.mention}...")
-                fake_message.content = command
-                fake_message.author = interaction.user
-
-                # Create a new context from the fake message and invoke the command
-                ctx = await interaction.client.get_context(fake_message)
-                await interaction.client.invoke(ctx)
-
-            except Exception as invoke_err:
-                 logger.error(f"Error invoking command '{cmd_name}' from button: {invoke_err}", exc_info=True)
-                 # Try to send an ephemeral follow-up if possible
-                 try:
-                     await interaction.followup.send("An error occurred while running that command.", ephemeral=True)
-                 except Exception:
-                     pass # Ignore if followup fails
-            finally:
-                # Delete the fake message to keep the channel clean
-                if fake_message:
-                    try:
-                        await fake_message.delete()
-                    except discord.NotFound:
-                        pass # Already deleted
-                    except discord.Forbidden:
-                        logger.warning(f"Missing permissions to delete fake message in #{interaction.channel.name}")
-        else:
-            logger.warning(f"Button tried to invoke non-existent command: {cmd_name}")
-            try:
-                await interaction.followup.send("Could not process that command.", ephemeral=True)
-            except Exception:
-                 pass # Ignore if followup fails
+                # Use followup since we deferred initially
+                await interaction.followup.send("An error occurred while running that action.", ephemeral=True)
+            except Exception: pass
+        # --- END FIX ---
 
     except Exception as e:
-        # General error handler for the whole callback
         logger.error(f"Error in button callback: {e}", exc_info=True)
         try:
-             # Check if we can still send an ephemeral follow-up
              if interaction.response.is_done():
                  await interaction.followup.send("An error occurred processing the button click.", ephemeral=True)
              else:
-                 # If not done, try the initial response
+                 # If not done, try the initial response (though unlikely needed after defer)
                  await interaction.response.send_message("An error occurred processing the button click.", ephemeral=True)
         except Exception as final_err:
              logger.error(f"Failed to send final error message for button callback: {final_err}")
 
 
 class HelpButton(Button):
-    def __init__(self, label: str, emoji: str, command: str, style: discord.ButtonStyle, bot_config: BotConfig, state: BotState):
+    def __init__(self, label: str, emoji: str, command: str, style: discord.ButtonStyle, helper: 'BotHelper'):
         super().__init__(label=label, emoji=emoji, style=style)
-        self.command, self.bot_config, self.state = command, bot_config, state
-    async def callback(self, interaction: discord.Interaction): await _button_callback_handler(interaction, self.command, self.bot_config, self.state)
+        self.command = command
+        self.helper = helper # Store the helper instance
+    async def callback(self, interaction: discord.Interaction): await _button_callback_handler(interaction, self.command, self.helper)
 
 class MusicButton(Button):
-    def __init__(self, label: str, emoji: str, command: str, style: discord.ButtonStyle, bot_config: BotConfig, state: BotState):
+    def __init__(self, label: str, emoji: str, command: str, style: discord.ButtonStyle, helper: 'BotHelper'):
         super().__init__(label=label, emoji=emoji, style=style)
-        self.command, self.bot_config, self.state = command, bot_config, state
-    async def callback(self, interaction: discord.Interaction): await _button_callback_handler(interaction, self.command, self.bot_config, self.state)
+        self.command = command
+        self.helper = helper # Store the helper instance
+    async def callback(self, interaction: discord.Interaction): await _button_callback_handler(interaction, self.command, self.helper)
 
 class HelpView(View):
-    def __init__(self, bot_config: BotConfig, state: BotState):
+    def __init__(self, helper: 'BotHelper'): # Pass helper
         super().__init__(timeout=None)
-        # Define buttons with their emoji, label, command, and desired color style
         cmds = [
             ("⏸️", "👤", "!refresh", discord.ButtonStyle.danger),
             ("⏭️", "👤", "!skip", discord.ButtonStyle.success),
@@ -215,7 +229,8 @@ class HelpView(View):
             ("🚩", "👤", "!report", discord.ButtonStyle.secondary)
         ]
         for e, l, c, s in cmds:
-            self.add_item(HelpButton(label=l, emoji=e, command=c, style=s, bot_config=bot_config, state=state))
+            self.add_item(HelpButton(label=l, emoji=e, command=c, style=s, helper=helper)) # Pass helper
+
 
 # --- Interactive Queue Components ---
 class QueueDropdown(discord.ui.Select):
@@ -232,7 +247,6 @@ class QueueDropdown(discord.ui.Select):
         super().__init__(placeholder="Select a song to jump to...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        # Check if the interacting user is the one who initiated the command.
         if interaction.user != self.author:
             await interaction.response.send_message("You can't control this menu.", ephemeral=True)
             return
@@ -242,40 +256,35 @@ class QueueDropdown(discord.ui.Select):
         async with self.state.music_lock:
             full_queue = self.state.active_playlist + self.state.search_queue
             if selected_index >= len(full_queue):
-                await interaction.response.send_message("That song is no longer in the queue. The list may be outdated.", ephemeral=True, delete_after=10)
-                try:
-                    await interaction.message.delete()
-                except discord.NotFound:
-                    pass
+                await interaction.response.send_message(
+                    "That song is no longer in the queue. The list may be outdated.",
+                    ephemeral=True, delete_after=10
+                )
+                try: await interaction.message.delete()
+                except discord.NotFound: pass
                 return
 
-            # Get the selected song and remove it from its original position in the full queue list
-            selected_song = full_queue.pop(selected_index)
+            selected_song = full_queue[selected_index]
 
-            # Reconstruct the original queues from the modified full queue
-            len_active = len(self.state.active_playlist)
-            if selected_index < len_active:
-                self.state.active_playlist.pop(selected_index)
-            else:
-                self.state.search_queue.pop(selected_index - len_active)
+            try: self.state.active_playlist.remove(selected_song)
+            except ValueError:
+                try: self.state.search_queue.remove(selected_song)
+                except ValueError:
+                    logger.error(f"FATAL: QueueDropdown song {selected_song.get('title')} not found in any queue for removal.")
+                    await interaction.response.send_message("A queue consistency error occurred.", ephemeral=True)
+                    return
 
-            # Place the selected song at the front of the search queue to be played next
             self.state.search_queue.insert(0, selected_song)
-            # Set the override flag to ensure this song plays next, regardless of mode.
             self.state.play_next_override = True
 
-        # Stop the current song to trigger the `after` callback, which will play the new song.
         if self.bot.voice_client_music and self.bot.voice_client_music.is_connected():
             self.bot.voice_client_music.stop()
             await interaction.response.send_message(f"✅ Jumping to **{selected_song.get('title')}**.", ephemeral=True, delete_after=10)
         else:
             await interaction.response.send_message(f"✅ Queued **{selected_song.get('title')}** to play next.", ephemeral=True, delete_after=10)
 
-        # After responding, delete the original message with the queue menu.
-        try:
-            await interaction.message.delete()
-        except discord.NotFound:
-            pass # The message might have been deleted already.
+        try: await interaction.message.delete()
+        except discord.NotFound: pass
 
 
 class QueueView(discord.ui.View):
@@ -349,7 +358,7 @@ class QueueView(discord.ui.View):
 
 
 class MusicView(discord.ui.View):
-    def __init__(self, bot_config: BotConfig, state: BotState):
+    def __init__(self, helper: 'BotHelper'): # Pass helper
         super().__init__(timeout=None)
         btns = [
             ("⏯️", "🎵", "!mpauseplay", discord.ButtonStyle.danger),
@@ -358,19 +367,20 @@ class MusicView(discord.ui.View):
             ("❌", "🎵", "!mclear", discord.ButtonStyle.secondary)
         ]
         for e, l, c, s in btns:
-            self.add_item(MusicButton(label=l, emoji=e, command=c, style=s, bot_config=bot_config, state=state))
+            self.add_item(MusicButton(label=l, emoji=e, command=c, style=s, helper=helper)) # Pass helper
 
 class BotHelper:
     """
     A class that encapsulates the logic for various bot commands and event notifications.
     This promotes modularity by separating command implementation from the event listeners in `bot.py`.
     """
-    def __init__(self, bot: commands.Bot, state: BotState, bot_config: BotConfig, save_func: Optional[Callable] = None, play_next_song_func: Optional[Callable] = None):
+    def __init__(self, bot: commands.Bot, state: BotState, bot_config: BotConfig, save_func: Optional[Callable] = None, play_next_song_func: Optional[Callable] = None, omegle_handler: Optional[OmegleHandler] = None): # --- FIX: Added omegle_handler ---
         self.bot = bot
         self.state = state
         self.bot_config = bot_config
         self.save_state = save_func
         self.play_next_song = play_next_song_func
+        self.omegle_handler = omegle_handler # --- FIX: Store omegle_handler ---
         self.LEAVE_BATCH_DELAY_SECONDS = 10
 
     async def _schedule_leave_processing(self):
@@ -439,8 +449,13 @@ class BotHelper:
             embed.description = description
             embed.set_footer(text=f"{count} members left the server.")
 
-        if self.state.notifications_enabled:
+        # --- FIX: Added lock around notifications_enabled read ---
+        async with self.state.moderation_lock:
+            notifications_are_enabled = self.state.notifications_enabled
+
+        if notifications_are_enabled: # <-- USE LOCAL VARIABLE
             await chat_channel.send(embed=embed)
+        # --- END FIX ---
 
         logger.info(f"Processed a batch of {count} member departures.")
 
@@ -637,7 +652,7 @@ class BotHelper:
             roles.reverse()
             roles_str = " ".join(roles)
             embed.add_field(name="Roles", value=roles_str, inline=True)
-            
+
         embed.add_field(name="Moderator", value=moderator.mention, inline=True)
         # --- END UPDATED ORDER ---
 
@@ -651,7 +666,10 @@ class BotHelper:
         """
         Sends a rich, formatted notification when a member's timeout is removed or expires.
         """
-        if not self.state.notifications_enabled: return
+        # --- FIX: Added lock around notifications_enabled read ---
+        async with self.state.moderation_lock:
+            if not self.state.notifications_enabled: return
+        # --- END FIX ---
         chat_channel = member.guild.get_channel(self.bot_config.CHAT_CHANNEL_ID)
         if not chat_channel: return
 
@@ -688,7 +706,10 @@ class BotHelper:
     @handle_errors
     async def send_unban_notification(self, user: discord.User, moderator: discord.User) -> None:
         """Sends a notification when a user is unbanned."""
-        if not self.state.notifications_enabled: return
+        # --- FIX: Added lock around notifications_enabled read ---
+        async with self.state.moderation_lock:
+            if not self.state.notifications_enabled: return
+        # --- END FIX ---
         chat_channel = self.bot.get_guild(self.bot_config.GUILD_ID).get_channel(self.bot_config.CHAT_CHANNEL_ID)
         if chat_channel:
             embed = discord.Embed(description=f"{user.mention} **UNBANNED**", color=discord.Color.green())
@@ -712,30 +733,24 @@ class BotHelper:
     @handle_errors
     async def handle_member_ban(self, guild: discord.Guild, user: discord.User) -> None:
         """
-        Handles the on_member_ban event. This now acts as the primary source for ban info.
+        FIX: Handles the on_member_ban event. ONLY logs state, does NOT send messages.
         """
         if guild.id != self.bot_config.GUILD_ID: return
 
-        chat_channel = guild.get_channel(self.bot_config.CHAT_CHANNEL_ID)
-        if not chat_channel: return
-
-        reason, moderator = "No reason provided", "Unknown"
+        reason, moderator_name = "No reason provided", "Unknown"
         try:
-            # Look for the specific ban action in the audit log
             async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
                 if entry.target and entry.target.id == user.id:
-                    moderator, reason = entry.user, entry.reason or "No reason provided"
+                    moderator_name = entry.user.name if entry.user else "Unknown"
+                    reason = entry.reason or "No reason provided"
                     break
         except Exception as e:
             logger.error(f"Could not fetch audit log for ban: {e}")
 
-        embed = await self._create_departure_embed(user, moderator, reason, "BANNED", discord.Color.red())
-        await chat_channel.send(embed=embed)
-
         async with self.state.moderation_lock:
-            # Mark this user as banned so on_member_remove knows to ignore them
             self.state.recently_banned_ids.add(user.id)
             self.state.recent_bans.append((user.id, user.name, getattr(user, 'display_name', user.name), datetime.now(timezone.utc), reason))
+            logger.info(f"Logged ban for {user.name}. Reason: {reason}. Moderator: {moderator_name}.")
 
     @handle_errors
     async def handle_member_unban(self, guild: discord.Guild, user: discord.User) -> None:
@@ -753,8 +768,8 @@ class BotHelper:
     @handle_errors
     async def handle_member_remove(self, member: discord.Member) -> None:
         """
-        FIX: Handles member departure by deterministically checking for a ban or kick first,
-        then processing as a leave. This removes the old race condition.
+        FIX: Handles member departure deterministically: checks ban, then kick, then processes as leave.
+        This is now the SOLE function responsible for sending departure notifications (ban/kick/leave).
         """
         if member.guild.id != self.bot_config.GUILD_ID: return
 
@@ -762,44 +777,66 @@ class BotHelper:
         chat_channel = guild.get_channel(self.bot_config.CHAT_CHANNEL_ID)
         if not chat_channel: return
 
-        # Give the on_member_ban event a moment to fire and add the user to the banned set
-        await asyncio.sleep(2)
-
+        # --- FIX: Deterministic Ban Check ---
         async with self.state.moderation_lock:
             if member.id in self.state.recently_banned_ids:
-                # This departure was a ban and was already handled by on_member_ban.
-                self.state.recently_banned_ids.remove(member.id) # Clean up the entry
-                logger.info(f"Departure of {member.name} confirmed as a ban, skipping further processing.")
-                return
+                # Ban already logged by on_member_ban. Send the notification here.
+                ban_entry = next((b for b in reversed(self.state.recent_bans) if b[0] == member.id), None)
+                reason = ban_entry[4] if ban_entry else "No reason provided"
+                # We don't easily know the moderator object here, so use the name stored
+                mod_name = "Unknown" # Placeholder if lookup fails
+                try:
+                    # Look slightly further back in audit log just in case
+                    async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.ban, after=datetime.now(timezone.utc) - timedelta(minutes=1)):
+                         if entry.target and entry.target.id == member.id:
+                             mod_name = entry.user.mention if entry.user else "Unknown"
+                             break
+                except Exception: pass
 
-        # If it wasn't a ban, check if it was a kick.
+                embed = await self._create_departure_embed(member, mod_name, reason, "BANNED", discord.Color.red())
+                await chat_channel.send(embed=embed)
+
+                self.state.recently_banned_ids.remove(member.id) # Clean up
+                logger.info(f"Processed departure for {member.name} as BAN.")
+                return # Ban handled.
+        # --- END FIX ---
+
+        # --- FIX: Deterministic Kick Check ---
         try:
-            # Check the audit log for a kick within the last 30 seconds.
-            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.kick, after=datetime.now(timezone.utc) - timedelta(seconds=30)):
-                if entry.target and entry.target.id == member.id:
+            # Check audit log shortly *after* the remove event timestamp
+            async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.kick, after=member.joined_at or (datetime.now(timezone.utc) - timedelta(minutes=5))): # Check recent kicks
+                # Check within a small window around the remove time
+                time_difference = abs((entry.created_at - datetime.now(timezone.utc)).total_seconds())
+                if entry.target and entry.target.id == member.id and time_difference < 10: # Check if kick happened within 10s of now
                     reason = entry.reason or "No reason provided"
                     embed = await self._create_departure_embed(member, entry.user, reason, "KICKED", discord.Color.orange())
-                    if self.state.notifications_enabled:
+                    
+                    # --- FIX: Added lock around notifications_enabled read ---
+                    async with self.state.moderation_lock:
+                        notifications_are_enabled = self.state.notifications_enabled
+
+                    if notifications_are_enabled: # <-- USE LOCAL VARIABLE
                         await chat_channel.send(embed=embed)
-                    logger.info(f"Processed departure for {member.name} as a KICK.")
+                    # --- END FIX ---
+
+                    logger.info(f"Processed departure for {member.name} as KICK.")
                     async with self.state.moderation_lock:
                         roles = [role.mention for role in member.roles if role.name != "@everyone"]
                         self.state.recent_kicks.append((member.id, member.name, member.display_name, datetime.now(timezone.utc), reason, entry.user.mention, " ".join(roles)))
-                    return # Kick handled, we are done.
+                    return # Kick handled.
         except discord.Forbidden:
             logger.warning("Missing permissions to check audit log for kicks.")
         except Exception as e:
             logger.error(f"Error checking audit log for kick: {e}")
+        # --- END FIX ---
 
-        # It's a leave, so buffer the data for batch processing.
+        # --- Process as Leave (Buffering logic remains) ---
         logger.info(f"Buffering LEAVE for {member.name}.")
 
-        # Extract all necessary information *before* the member object becomes invalid.
         roles = [role.mention for role in member.roles if role.name != "@everyone"]
-        roles.reverse() # Show highest roles first
+        roles.reverse()
         role_string = " ".join(roles) if roles else "No roles"
 
-        # The data that will be used to generate the leave notification.
         leave_data_for_notification = {
             'mention': member.mention,
             'name': member.name,
@@ -809,17 +846,12 @@ class BotHelper:
         }
 
         async with self.state.moderation_lock:
-            # Add to the permanent history log for !whois
             self.state.recent_leaves.append((member.id, member.name, member.display_name, datetime.now(timezone.utc), role_string))
 
-            # Cancel any existing batch task to reset the timer
             if self.state.leave_batch_task:
                 self.state.leave_batch_task.cancel()
 
-            # Add the extracted data to the notification buffer
             self.state.leave_buffer.append(leave_data_for_notification)
-
-            # Schedule the new batch processing task
             self.state.leave_batch_task = asyncio.create_task(self._schedule_leave_processing())
 
     async def send_help_menu(self, target: Any) -> None:
@@ -835,7 +867,9 @@ class BotHelper:
             embed = discord.Embed(title="👤  Omegle Controls  👤", description=help_description, color=discord.Color.blue())
             destination = target.channel if hasattr(target, 'channel') else target
             if destination and hasattr(destination, 'send'):
-                await destination.send(embed=embed, view=HelpView(self.bot_config, self.state))
+                # --- FIX: Pass self (the helper instance) to the View ---
+                await destination.send(embed=embed, view=HelpView(self))
+                # --- END FIX ---
         except Exception as e:
             logger.error(f"Error in send_help_menu: {e}", exc_info=True)
 
@@ -919,7 +953,7 @@ class BotHelper:
     @handle_errors
     async def show_info(self, ctx) -> None:
         """(Command) Sends the pre-configured info messages to the channel."""
-        command_name = f"!{ctx.invoked_with}"
+        command_name = f"!{ctx.invoked_with if hasattr(ctx, 'invoked_with') else 'info'}" # Handle mock ctx
         record_command_usage(self.state.analytics, command_name)
         record_command_usage_by_user(self.state.analytics, ctx.author.id, command_name)
         for msg in self.bot_config.INFO_MESSAGES: await ctx.send(msg)
@@ -945,6 +979,33 @@ class BotHelper:
                     if len(embeds) > 1: embed.title = f"{embed.title} (Part {i + 1})"
                     embed.set_footer(text=f"Total members: {len(role.members)}")
                     await ctx.send(embed=embed)
+
+    @handle_errors
+    async def show_role_members(self, ctx, role: discord.Role) -> None:
+        """(Command) Lists all members within a specific role."""
+        record_command_usage(self.state.analytics, "!role")
+        record_command_usage_by_user(self.state.analytics, ctx.author.id, "!role")
+
+        if not role.members:
+            await ctx.send(f"No members found in the **{role.name}** role.")
+            return
+
+        # Sort members alphabetically by their real username (case-insensitive)
+        sorted_members = sorted(role.members, key=lambda m: m.name.lower())
+
+        def process_member(member):
+            return f"• {member.display_name} ({member.name})"
+
+        embeds = create_message_chunks(
+            entries=sorted_members,
+            title=f"Members in Role: {role.name} (Total: {len(role.members)})",
+            process_entry=process_member,
+            as_embed=True,
+            embed_color=role.color or discord.Color.blue()
+        )
+
+        for embed in embeds:
+            await ctx.send(embed=embed)
 
     @handle_errors
     async def show_admin_list(self, ctx) -> None:
@@ -1013,6 +1074,7 @@ class BotHelper:
             "`!timeouts` - Shows currently timed-out users.\n"
             "`!rtimeouts` - Removes all active timeouts from users.\n"
             "`!display <user>` - Shows a detailed profile for a user.\n"
+            "`!role <@role>` - Lists all members in a specific role.\n" # <-- Added !role
             "`!commands` - Shows this list of all commands."
         )
 
@@ -1156,7 +1218,9 @@ class BotHelper:
             def process_kick(entry):
                 uid, name, dname, ts, reason, mod, _ = entry
                 user_info = get_user_display_info(uid, name, dname)
+                # --- FIX: Use mod mention string directly ---
                 line = f"• {user_info} - by {mod}"
+                # --- END FIX ---
                 if reason and reason != "No reason provided":
                     line += f" for *{reason}*"
                 line += f" <t:{int(ts.timestamp())}:R>"
@@ -1178,8 +1242,9 @@ class BotHelper:
         if unban_list:
             has_data = True
             def process_unban(entry):
-                uid, name, dname, ts, mod = entry
+                uid, name, dname, ts, mod = entry # mod is name string here
                 user_info = get_user_display_info(uid, name, dname)
+                # Display name, as ID isn't stored here
                 return f"• {user_info} - by {mod} <t:{int(ts.timestamp())}:R>"
             reports["🔓 Recent Unbans"] = create_message_chunks(unban_list, "🔓 Recent Unbans (24h)", process_unban, as_embed=True, embed_color=discord.Color.dark_green())
 
@@ -1796,7 +1861,9 @@ class BotHelper:
 *{" | ".join(status_lines)}*
 """
             embed = discord.Embed(title="🎵  Music Controls 🎵", description=description, color=discord.Color.purple())
-            view = MusicView(self.bot_config, self.state)
+            # --- FIX: Pass self (the helper instance) to the View ---
+            view = MusicView(self)
+            # --- END FIX ---
             return embed, view
 
         except Exception as e:
@@ -1824,65 +1891,129 @@ class BotHelper:
             return None
 
     @handle_errors
-    async def confirm_and_clear_music_queue(self, ctx) -> None:
-        """(Command) Confirms with the user and clears all music queues and stops playback."""
+    async def confirm_and_clear_music_queue(self, ctx_or_interaction: Union[commands.Context, discord.Interaction]) -> None:
+        """(Command/Button) Confirms with the user and clears all music queues and stops playback."""
+        # Determine context and user
+        if isinstance(ctx_or_interaction, commands.Context):
+            ctx = ctx_or_interaction
+            author = ctx.author
+            send_func = ctx.send
+            edit_func = lambda msg, **kwargs: msg.edit(**kwargs)
+            clear_react_func = lambda msg: msg.clear_reactions()
+            initial_message_content = f"Are you sure you want to clear the queue and stop playback?\nReact with ✅ to confirm or ❌ to cancel."
+            message_obj_attr = 'message'
+        elif isinstance(ctx_or_interaction, discord.Interaction):
+            interaction = ctx_or_interaction
+            author = interaction.user
+            send_func = interaction.followup.send # Use followup after deferring
+            edit_func = interaction.edit_original_response
+            clear_react_func = lambda msg: interaction.edit_original_response(view=None) # Edit to remove buttons
+            initial_message_content = f"Are you sure you want to clear the queue and stop playback?"
+            message_obj_attr = 'message' # Interaction object has the message attached
+            # Need to defer if it's an interaction and hasn't been deferred yet
+            if not interaction.response.is_done():
+                 await interaction.response.defer(ephemeral=True) # Defer ephemerally for confirmation
+        else:
+            logger.error(f"Unsupported context type for clear queue: {type(ctx_or_interaction)}")
+            return
+
+        # Log usage
         record_command_usage(self.state.analytics, "!mclear")
-        record_command_usage_by_user(self.state.analytics, ctx.author.id, "!mclear")
+        record_command_usage_by_user(self.state.analytics, author.id, "!mclear")
 
         async with self.state.music_lock:
-            # Check all queues and current playback status
             full_queue = self.state.active_playlist + self.state.search_queue
             is_playing = self.bot.voice_client_music and (self.bot.voice_client_music.is_playing() or self.bot.voice_client_music.is_paused())
-
-            if not full_queue and not is_playing:
-                await ctx.send("The music queue is already empty and nothing is playing.", delete_after=10)
-                return
-
             queue_length = len(full_queue)
 
-        confirm_msg = await ctx.send(
-            f"Are you sure you want to clear the **{queue_length}** songs in the queue and stop playback?\n"
-            "React with ✅ to confirm or ❌ to cancel."
-        )
-        await confirm_msg.add_reaction("✅")
-        await confirm_msg.add_reaction("❌")
+        if not full_queue and not is_playing:
+            # Use followup.send for interactions, send for context
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                 await interaction.followup.send("The music queue is already empty and nothing is playing.", ephemeral=True, delete_after=10)
+            else:
+                 await send_func("The music queue is already empty and nothing is playing.", delete_after=10)
+            return
 
-        def check(reaction, user):
-            return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == confirm_msg.id
+        # --- Confirmation View ---
+        confirm_view = View(timeout=30.0)
+        confirmed = asyncio.Future()
+
+        async def confirm_callback(interaction: discord.Interaction):
+            if interaction.user != author:
+                await interaction.response.send_message("You cannot confirm this action.", ephemeral=True)
+                return
+            await interaction.response.defer() # Acknowledge interaction
+            confirmed.set_result(True)
+            confirm_view.stop()
+
+        async def cancel_callback(interaction: discord.Interaction):
+            if interaction.user != author:
+                await interaction.response.send_message("You cannot cancel this action.", ephemeral=True)
+                return
+            await interaction.response.defer()
+            confirmed.set_result(False)
+            confirm_view.stop()
+
+        confirm_button = Button(label="Confirm Clear", style=discord.ButtonStyle.danger, emoji="✅")
+        cancel_button = Button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+        confirm_button.callback = confirm_callback
+        cancel_button.callback = cancel_callback
+        confirm_view.add_item(confirm_button)
+        confirm_view.add_item(cancel_button)
+
+        # Send confirmation message (use followup for interaction)
+        confirm_msg = None
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            confirm_msg = await interaction.followup.send(
+                 f"Are you sure you want to clear **{queue_length}** songs and stop playback?",
+                 view=confirm_view, ephemeral=True, wait=True
+            )
+        else: # For context object
+             confirm_msg = await ctx.send(
+                 f"Are you sure you want to clear **{queue_length}** songs and stop playback?\nReact with ✅/❌.",
+                 view=confirm_view
+             )
+
+
+        # Wait for confirmation
+        await confirm_view.wait() # Wait for view interaction or timeout
 
         try:
-            reaction, _ = await self.bot.wait_for("reaction_add", timeout=30.0, check=check)
+             # Edit message to remove buttons after interaction/timeout
+             # For interactions, edit the *original response* from followup.send
+             await interaction.edit_original_response(view=None) if isinstance(ctx_or_interaction, discord.Interaction) else await confirm_msg.edit(view=None)
+        except Exception: pass # Ignore errors if message deleted
 
-            if str(reaction.emoji) == "✅":
-                was_playing = False
-                async with self.state.music_lock:
-                    # Clear all song queues
-                    self.state.search_queue.clear()
-                    self.state.active_playlist.clear()
 
-                    # Check if music is playing/paused and stop it.
-                    if self.bot.voice_client_music and (self.bot.voice_client_music.is_playing() or self.bot.voice_client_music.is_paused()):
-                        was_playing = True
-                        # Set a flag to tell the 'after' callback (play_next_song) to halt execution.
-                        self.state.stop_after_clear = True
-                        self.bot.voice_client_music.stop()
+        if confirmed.done() and confirmed.result() is True:
+            was_playing = False
+            async with self.state.music_lock:
+                self.state.search_queue.clear()
+                self.state.active_playlist.clear()
+                if self.bot.voice_client_music and (self.bot.voice_client_music.is_playing() or self.bot.voice_client_music.is_paused()):
+                    was_playing = True
+                    self.state.stop_after_clear = True
+                    self.bot.voice_client_music.stop()
 
-                response_text = f"✅ Cleared **{queue_length}** songs from the queue."
-                if was_playing:
-                    response_text += " and stopped playback."
+            response_text = f"✅ Cleared **{queue_length}** songs from the queue."
+            if was_playing: response_text += " and stopped playback."
 
-                await confirm_msg.edit(content=response_text, view=None)
-                logger.info(f"Music queue and playback cleared by {ctx.author.name}")
-            else:
-                await confirm_msg.edit(content="❌ Queue clear cancelled.", view=None)
+            # Send public confirmation to the channel the interaction happened in
+            await ctx_or_interaction.channel.send(response_text)
+            logger.info(f"Music queue and playback cleared by {author.name}")
 
-        except asyncio.TimeoutError:
-            await confirm_msg.edit(content="⌛ Queue clear timed out.", view=None)
-        finally:
-            try:
-                await confirm_msg.clear_reactions()
-            except discord.HTTPException:
-                pass
+        elif confirmed.done() and confirmed.result() is False:
+             # Optionally send ephemeral cancel confirmation via followup
+             # if isinstance(ctx_or_interaction, discord.Interaction):
+             #    await interaction.followup.send("❌ Queue clear cancelled.", ephemeral=True, delete_after=5)
+             pass # Or just do nothing on cancel
+        else: # Timeout
+             # Optionally send ephemeral timeout message via followup
+             # if isinstance(ctx_or_interaction, discord.Interaction):
+             #    await interaction.followup.send("⌛ Queue clear timed out.", ephemeral=True, delete_after=5)
+             pass # Or just do nothing on timeout
+
+
 
     @handle_errors
     async def show_now_playing(self, ctx) -> None:

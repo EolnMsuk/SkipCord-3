@@ -390,6 +390,7 @@ class BotState:
     moderation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     music_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     cooldown_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    screenshot_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False) # New lock for screenshots
     music_startup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     # --- State Data ---
@@ -448,10 +449,11 @@ class BotState:
     # Transient state (not saved to disk)
     ban_message_id: Optional[int] = None
     music_menu_message_id: Optional[int] = None
+    times_report_message_id: Optional[int] = None # Added for periodic times report
     announcement_context: Optional[Any] = None
     play_next_override: bool = False
     stop_after_clear: bool = False
-    leave_buffer: List[discord.Member] = field(default_factory=list, init=False)
+    leave_buffer: List[dict] = field(default_factory=list, init=False) # Changed to dict
     leave_batch_task: Optional[asyncio.Task] = field(default=None, init=False)
     ban_screenshots: ScreenshotBuffer = field(default_factory=list, init=False)
 
@@ -545,6 +547,9 @@ class BotState:
             # Omegle ban state
             "is_banned": self.is_banned,
             "ban_message_id": self.ban_message_id,
+            "music_menu_message_id": self.music_menu_message_id, # Added music menu ID
+            "times_report_message_id": self.times_report_message_id, # Added times report ID
+            "vc_moderation_active": self.vc_moderation_active, # Added VC mod state
         }
 
     @classmethod
@@ -597,7 +602,10 @@ class BotState:
         # Omegle ban state
         state.is_banned = data.get("is_banned", False)
         state.ban_message_id = data.get("ban_message_id", None)
-        
+        state.music_menu_message_id = data.get("music_menu_message_id", None) # Added music menu ID
+        state.times_report_message_id = data.get("times_report_message_id", None) # Added times report ID
+        state.vc_moderation_active = data.get("vc_moderation_active", True) # Added VC mod state
+
         return state
 
     async def check_and_log_command(self, log_id: str) -> bool:
@@ -616,18 +624,21 @@ class BotState:
         A unified cleanup function that runs periodically to prune old data from the state.
         This is crucial for managing memory usage over long uptimes. It trims event histories
         to the last 7 days and enforces size limits on large datasets.
+        Locks are now acquired in a consistent order to prevent deadlocks.
         """
         current_time = time.time()
         now = datetime.now(timezone.utc)
         seven_days_ago_dt = now - timedelta(days=7)
 
-        # Clean up expired cooldowns.
-        async with self.cooldown_lock:
-            self.cooldowns = {k: v for k, v in self.cooldowns.items() if current_time - v[0] < (self.config.COMMAND_COOLDOWN * 2)}
-            self.button_cooldowns = {k: v for k, v in self.button_cooldowns.items() if current_time - v[0] < (self.config.COMMAND_COOLDOWN * 2)}
+        # Acquire main state locks in the consistent order (vc -> analytics -> moderation -> music)
+        async with self.vc_lock, self.analytics_lock, self.moderation_lock, self.music_lock: # --- FIX: Consolidated locks ---
 
-        # Clean up expired moderation data.
-        async with self.moderation_lock:
+            # Clean up expired cooldowns (uses a separate lock).
+            async with self.cooldown_lock:
+                self.cooldowns = {k: v for k, v in self.cooldowns.items() if current_time - v[0] < (self.config.COMMAND_COOLDOWN * 2)}
+                self.button_cooldowns = {k: v for k, v in self.button_cooldowns.items() if current_time - v[0] < (self.config.COMMAND_COOLDOWN * 2)}
+
+            # Clean up expired moderation data (uses moderation_lock - already acquired).
             self.active_timeouts = {k: v for k, v in self.active_timeouts.items() if v.get('timeout_end', float('inf')) > current_time}
             self.recent_kick_timestamps = {k: v for k, v in self.recent_kick_timestamps.items() if now - v < timedelta(days=7)}
             # Simple clear for large user sets to prevent unbounded growth.
@@ -637,8 +648,7 @@ class BotState:
             if len(self.recently_banned_ids) > 200:
                 self.recently_banned_ids.clear()
 
-        # Clean up old VC time data.
-        async with self.vc_lock:
+            # Clean up old VC time data (uses vc_lock - already acquired).
             self.camera_off_timers = {k: v for k, v in self.camera_off_timers.items() if current_time - v < (self.config.CAMERA_OFF_ALLOWED_TIME * 2)}
             seven_days_ago_ts = current_time - (7 * 24 * 3600)
             self.vc_time_data = {
@@ -647,8 +657,7 @@ class BotState:
                 if any(s.get("end", 0) > seven_days_ago_ts for s in data.get("sessions", []))
             }
 
-        # Trim analytics data if it grows too large.
-        async with self.analytics_lock:
+            # Trim analytics data if it grows too large (uses analytics_lock - already acquired).
             if isinstance(self.analytics.get("command_usage_by_user"), dict) and len(self.analytics["command_usage_by_user"]) > 1000:
                 user_usage_sorted = sorted(self.analytics["command_usage_by_user"].items(), key=lambda x: sum(x[1].values()), reverse=True)
                 self.analytics["command_usage_by_user"] = dict(user_usage_sorted[:1000])
@@ -656,21 +665,21 @@ class BotState:
                 commands_sorted = sorted(self.analytics["command_usage"].items(), key=lambda x: x[1], reverse=True)
                 self.analytics["command_usage"] = dict(commands_sorted[:100])
 
-        # Define limits for historical event lists.
-        list_specs = {
-            'recent_joins': (3, 200), 'recent_leaves': (3, 200), 'recent_bans': (3, 200),
-            'recent_kicks': (3, 200), 'recent_unbans': (3, 200), 'recent_untimeouts': (3, 200),
-            'recent_role_changes': (4, 200)
-        }
+            # Define limits for historical event lists (uses moderation_lock - already acquired).
+            list_specs = {
+                'recent_joins': (3, 200), 'recent_leaves': (3, 200), 'recent_bans': (3, 200),
+                'recent_kicks': (3, 200), 'recent_unbans': (3, 200), 'recent_untimeouts': (3, 200),
+                'recent_role_changes': (4, 200)
+            }
 
-        # Clean all historical event lists based on the defined specs.
-        for list_name, (time_idx, max_entries) in list_specs.items():
-            async with self.moderation_lock:
+            # Clean all historical event lists based on the defined specs.
+            for list_name, (time_idx, max_entries) in list_specs.items():
                 lst = getattr(self, list_name)
-                cleaned = [entry for entry in lst if len(entry) > time_idx and entry[time_idx] > seven_days_ago_dt][-max_entries:]
+                # Ensure entry has enough elements before accessing time_idx
+                cleaned = [entry for entry in lst if len(entry) > time_idx and isinstance(entry[time_idx], datetime) and entry[time_idx] > seven_days_ago_dt][-max_entries:]
                 setattr(self, list_name, cleaned)
 
-        # Clear the temporary command log cache.
+        # Clean the temporary command log cache (uses cooldown_lock).
         if len(self.recently_logged_commands) > 5000:
             async with self.cooldown_lock:
                 self.recently_logged_commands.clear()

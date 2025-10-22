@@ -17,6 +17,10 @@ from discord.ext import commands
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException, StaleElementReferenceException, UnexpectedAlertPresentException, NoSuchElementException
 from selenium.webdriver.edge.service import Service
+# --- [NEW IMPORTS] ---
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+# --- [END NEW IMPORTS] ---
 from loguru import logger
 
 # Local application imports
@@ -129,43 +133,46 @@ class OmegleHandler:
         It checks if the command has already been sent and updates the state on success.
         Returns True on success, False on failure.
         """
-        if not self.state or self.state.relay_command_sent:
-            return True  # Already sent, so it's "successful" in a sense.
+        # --- FIX: Added lock ---
+        async with self.state.moderation_lock:
+            if not self.state or self.state.relay_command_sent:
+                return True  # Already sent or state unavailable, so it's "successful".
 
-        logger.info("Attempting to send /relay command and set volume...")
-        
-        # Set volume before sending the relay message
-        await self._set_volume()
+            logger.info("Attempting to send /relay command and set volume...")
 
-        try:
-            chat_input_selector = "textarea.messageInput"
-            send_button_xpath = "//div[contains(@class, 'mainText') and text()='Send']"
+            # Set volume before sending the relay message
+            await self._set_volume()
 
-            def send_relay_command():
-                try:
-                    # Give the page a moment to ensure elements are interactable
-                    time.sleep(1.0)
-                    chat_input = self.driver.find_element("css selector", chat_input_selector)
-                    chat_input.send_keys("/relay")
-                    time.sleep(0.5) # Wait briefly after typing
-                    send_button = self.driver.find_element("xpath", send_button_xpath)
-                    send_button.click()
+            try:
+                chat_input_selector = "textarea.messageInput"
+                send_button_xpath = "//div[contains(@class, 'mainText') and text()='Send']"
+
+                def send_relay_command():
+                    try:
+                        # Give the page a moment to ensure elements are interactable
+                        time.sleep(1.0)
+                        chat_input = self.driver.find_element("css selector", chat_input_selector)
+                        chat_input.send_keys("/relay")
+                        time.sleep(0.5) # Wait briefly after typing
+                        send_button = self.driver.find_element("xpath", send_button_xpath)
+                        send_button.click()
+                        return True
+                    except Exception as e:
+                        logger.warning(f"Could not find/interact with chat elements to send /relay. Will retry on next skip. Error: {e}")
+                        return False
+
+                relay_sent = await asyncio.to_thread(send_relay_command)
+
+                if relay_sent:
+                    self.state.relay_command_sent = True # Set the flag *only* on success inside the lock
+                    logger.info("Successfully sent /relay command and updated state.")
                     return True
-                except Exception as e:
-                    logger.warning(f"Could not find/interact with chat elements to send /relay. Will retry on next skip. Error: {e}")
-                    return False
+            except Exception as e:
+                logger.error(f"An unexpected error occurred when trying to send /relay: {e}")
 
-            relay_sent = await asyncio.to_thread(send_relay_command)
-
-            if relay_sent:
-                self.state.relay_command_sent = True
-                logger.info("Successfully sent /relay command and updated state.")
-                return True
-        except Exception as e:
-            logger.error(f"An unexpected error occurred when trying to send /relay: {e}")
-
-        logger.warning("Failed to send /relay command. Will retry on next skip.")
-        return False
+            logger.warning("Failed to send /relay command. Will retry on next skip.")
+            return False
+        # --- END FIX ---
 
 
     def __init__(self, bot: commands.Bot, bot_config: BotConfig):
@@ -352,6 +359,46 @@ class OmegleHandler:
                 self.driver = None
                 self._driver_initialized = False
 
+    # --- [NEW METHOD] ---
+    @require_healthy_driver
+    async def find_and_click_checkbox(self) -> bool:
+        """
+        Finds an <input type="checkbox"> element and clicks it using human-like mouse actions.
+        """
+        try:
+            def perform_checkbox_click():
+                # Find the checkbox element
+                checkbox = self.driver.find_element(By.CSS_SELECTOR, 'input[type="checkbox"]')
+                
+                # Check if it's already selected
+                if checkbox.is_selected():
+                    logger.info("Checkbox already selected, no action needed.")
+                    return False # Indicate no action was taken
+                
+                # Use ActionChains to emulate a human click
+                logger.info("Checkbox found. Moving mouse to element and clicking...")
+                actions = ActionChains(self.driver)
+                actions.move_to_element(checkbox)
+                actions.pause(0.5) # Brief pause over the element
+                actions.click(checkbox)
+                actions.perform()
+                return True # Indicate action was taken
+
+            clicked = await asyncio.to_thread(perform_checkbox_click)
+            
+            if clicked:
+                logger.info("Successfully clicked the checkbox.")
+            return True
+
+        except NoSuchElementException:
+            # This is not an error, it just means the checkbox isn't present.
+            logger.info("No checkbox found on the page.")
+            return False
+        except Exception as e:
+            logger.error(f"An error occurred while trying to click the checkbox: {e}", exc_info=True)
+            return False
+    # --- [END NEW METHOD] ---
+
     @require_healthy_driver
     async def custom_skip(self, ctx: Optional[commands.Context] = None) -> bool:
         """
@@ -464,7 +511,10 @@ class OmegleHandler:
             
             # On successful refresh, arm the /relay command for the next skip.
             if self.state:
-                self.state.relay_command_sent = False
+                # --- FIX: Need lock to modify state safely ---
+                async with self.state.moderation_lock:
+                    self.state.relay_command_sent = False
+                # --- END FIX ---
                 logger.info("Relay command armed to be sent on the next skip after refresh.")
 
             logger.info("Selenium: Page refreshed successfully.")
@@ -582,15 +632,15 @@ class OmegleHandler:
             # Run the blocking screenshot call in a separate thread.
             screenshot_bytes = await asyncio.to_thread(capture_jpeg_bytes)
             
-            # Use a lock to safely modify the shared state list.
-            # Reusing an existing lock like cooldown_lock is fine for ensuring atomicity.
-            async with self.state.cooldown_lock:
+            # --- FIX: Use dedicated screenshot_lock ---
+            async with self.state.screenshot_lock:
                 if not hasattr(self.state, 'ban_screenshots'):
                      self.state.ban_screenshots = []
                 self.state.ban_screenshots.append((time.time(), screenshot_bytes))
                 # Keep the list trimmed to the last 3 screenshots.
                 if len(self.state.ban_screenshots) > 3:
                     self.state.ban_screenshots.pop(0)
+            # --- END FIX ---
             
         except Exception as e:
             logger.error(f"Failed to capture and store screenshot for ban buffer: {e}")
@@ -608,135 +658,141 @@ class OmegleHandler:
             current_url = await asyncio.to_thread(lambda: self.driver.current_url)
 
             # --- BAN DETECTION ---
-            if "/ban/" in current_url and not self.state.is_banned:
-                logger.warning(f"Proactive ban check detected a ban! URL: {current_url}.")
+            # --- FIX: Added lock ---
+            async with self.state.moderation_lock:
+                if "/ban/" in current_url and not self.state.is_banned:
+                    logger.warning(f"Proactive ban check detected a ban! URL: {current_url}.")
 
-                # --- [NEW] Log users in streaming VC to ban.log ---
-                try:
-                    guild = self.bot.get_guild(self.config.GUILD_ID)
-                    if guild:
-                        streaming_vc = guild.get_channel(self.config.STREAMING_VC_ID)
-                        members_in_vc = streaming_vc.members if streaming_vc else []
-                        
-                        ban_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-                        # Use .bind(BAN_LOG=True) to tag these messages for the ban.log filter
-                        logger.bind(BAN_LOG=True).info(f"--- BAN DETECTED at {ban_time} ---")
-                        
-                        human_members = [m for m in members_in_vc if not m.bot]
-                        
-                        if human_members:
-                            logger.bind(BAN_LOG=True).info(f"Users in streaming VC ({streaming_vc.name}):")
-                            for member in human_members:
-                                # Log each user's details
-                                logger.bind(BAN_LOG=True).info(f"  - UserID: {member.id:<20} | Username: {member.name:<32} | DisplayName: {member.display_name}")
-                        else:
-                            logger.bind(BAN_LOG=True).info("Streaming VC was empty of users at the time of the ban.")
-                        
-                        logger.bind(BAN_LOG=True).info("--- END OF BAN REPORT ---")
-                    else:
-                        logger.error("Could not get guild to log users for ban report.")
-                except Exception as ban_log_e:
-                    # Log to the main bot.log if the ban.log fails for any reason
-                    logger.error(f"Failed to write to ban.log: {ban_log_e}", exc_info=True)
-                # --- End [NEW] ---
-
-                # --- [MODIFIED] Save and post buffered screenshots ---
-                if self.config.SS_LOCATION and hasattr(self.state, 'ban_screenshots'):
-                    saved_filepaths = []
+                    # --- [NEW] Log users in streaming VC to ban.log ---
                     try:
-                        # Use a lock to safely read and clear the list.
-                        async with self.state.cooldown_lock:
-                            screenshots_to_save = self.state.ban_screenshots.copy()
-                            self.state.ban_screenshots.clear() # Clear buffer after copying
-
-                        if screenshots_to_save:
-                            os.makedirs(self.config.SS_LOCATION, exist_ok=True)
-                            ban_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                        guild = self.bot.get_guild(self.config.GUILD_ID)
+                        if guild:
+                            streaming_vc = guild.get_channel(self.config.STREAMING_VC_ID)
+                            members_in_vc = streaming_vc.members if streaming_vc else []
                             
-                            # [REMOVED] Block to get VC usernames to prevent long filenames.
-
-                            for i, (capture_time, ss_bytes) in enumerate(screenshots_to_save):
-                                # [MODIFIED] Simplified filename
-                                filename = f"ban-{ban_timestamp}-{i + 1}.jpg"
-                                filepath = os.path.join(self.config.SS_LOCATION, filename)
-                                
-                                try:
-                                    with open(filepath, "wb") as f:
-                                        f.write(ss_bytes)
-                                    logger.info(f"Saved pre-ban screenshot to: {filepath}")
-                                    saved_filepaths.append(filepath) # Keep track of saved files
-                                except Exception as write_e:
-                                    logger.error(f"Failed to write pre-ban screenshot {filename}: {write_e}")
+                            ban_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                            # Use .bind(BAN_LOG=True) to tag these messages for the ban.log filter
+                            logger.bind(BAN_LOG=True).info(f"--- BAN DETECTED at {ban_time} ---")
                             
-                            logger.info(f"Successfully saved {len(screenshots_to_save)} pre-ban screenshots.")
-
-                            # --- [NEW] Post screenshots to channel ---
-                            stats_channel_id = self.config.AUTO_STATS_CHAN or self.config.CHAT_CHANNEL_ID
-                            stats_channel = self.bot.get_channel(stats_channel_id)
-                            if stats_channel and saved_filepaths:
-                                try:
-                                    await stats_channel.send("@here The screenshots below were taken before the most recent ban:")
-                                    files_to_send = [discord.File(fp) for fp in saved_filepaths]
-                                    await stats_channel.send(files=files_to_send)
-                                    logger.info(f"Posted {len(saved_filepaths)} pre-ban screenshots to channel ID {stats_channel_id}.")
-                                except discord.Forbidden:
-                                    logger.error(f"Missing permissions to post pre-ban screenshots in channel ID {stats_channel_id}.")
-                                except Exception as post_e:
-                                    logger.error(f"Failed to post pre-ban screenshots: {post_e}")
-                            elif not stats_channel:
-                                logger.error(f"AUTO_STATS_CHAN (ID: {stats_channel_id}) not found for posting ban screenshots.")
-                            # --- End [NEW] ---
+                            human_members = [m for m in members_in_vc if not m.bot]
+                            
+                            if human_members:
+                                logger.bind(BAN_LOG=True).info(f"Users in streaming VC ({streaming_vc.name}):")
+                                for member in human_members:
+                                    # Log each user's details
+                                    logger.bind(BAN_LOG=True).info(f"  - UserID: {member.id:<20} | Username: {member.name:<32} | DisplayName: {member.display_name}")
+                            else:
+                                logger.bind(BAN_LOG=True).info("Streaming VC was empty of users at the time of the ban.")
+                            
+                            logger.bind(BAN_LOG=True).info("--- END OF BAN REPORT ---")
                         else:
-                            logger.warning("Ban detected, but screenshot buffer was empty.")
-                    except Exception as ss_e:
-                        logger.error(f"An error occurred while saving/posting pre-ban screenshots: {ss_e}")
-                # --- End [MODIFIED] ---
+                            logger.error("Could not get guild to log users for ban report.")
+                    except Exception as ban_log_e:
+                        # Log to the main bot.log if the ban.log fails for any reason
+                        logger.error(f"Failed to write to ban.log: {ban_log_e}", exc_info=True)
+                    # --- End [NEW] ---
 
-                self.state.is_banned = True # Set state to prevent re-announcements.
-                try:
-                    chat_channel = self.bot.get_channel(self.config.CHAT_CHANNEL_ID)
-                    if chat_channel:
-                        message = (
-                            f"@here The Streaming VC Bot just got banned on Omegle - Wait for Host OR use this URL in your browser to pay "
-                            f"for an unban - Afterwards, just !skip and it should be unbanned!\n"
-                            f"{current_url}"
-                        )
-                        ban_msg = await chat_channel.send(message)
-                        self.state.ban_message_id = ban_msg.id # Store the message ID to delete it later
-                        logger.info(f"Sent ban notification (ID: {ban_msg.id}) to channel ID {self.config.CHAT_CHANNEL_ID}.")
-                except Exception as e:
-                    logger.error(f"Failed to send ban notification: {e}")
+                    # --- [MODIFIED] Save and post buffered screenshots ---
+                    if self.config.SS_LOCATION and hasattr(self.state, 'ban_screenshots'):
+                        saved_filepaths = []
+                        try:
+                            # Use a separate lock for screenshots
+                            async with self.state.screenshot_lock:
+                                screenshots_to_save = self.state.ban_screenshots.copy()
+                                self.state.ban_screenshots.clear() # Clear buffer after copying
+
+                            if screenshots_to_save:
+                                os.makedirs(self.config.SS_LOCATION, exist_ok=True)
+                                ban_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                                
+                                # [REMOVED] Block to get VC usernames to prevent long filenames.
+
+                                for i, (capture_time, ss_bytes) in enumerate(screenshots_to_save):
+                                    # [MODIFIED] Simplified filename
+                                    filename = f"ban-{ban_timestamp}-{i + 1}.jpg"
+                                    filepath = os.path.join(self.config.SS_LOCATION, filename)
+                                    
+                                    try:
+                                        with open(filepath, "wb") as f:
+                                            f.write(ss_bytes)
+                                        logger.info(f"Saved pre-ban screenshot to: {filepath}")
+                                        saved_filepaths.append(filepath) # Keep track of saved files
+                                    except Exception as write_e:
+                                        logger.error(f"Failed to write pre-ban screenshot {filename}: {write_e}")
+                                
+                                logger.info(f"Successfully saved {len(screenshots_to_save)} pre-ban screenshots.")
+
+                                # --- [NEW] Post screenshots to channel ---
+                                stats_channel_id = self.config.AUTO_STATS_CHAN or self.config.CHAT_CHANNEL_ID
+                                stats_channel = self.bot.get_channel(stats_channel_id)
+                                if stats_channel and saved_filepaths:
+                                    try:
+                                        await stats_channel.send("@here The screenshots below were taken before the most recent ban:")
+                                        files_to_send = [discord.File(fp) for fp in saved_filepaths]
+                                        await stats_channel.send(files=files_to_send)
+                                        logger.info(f"Posted {len(saved_filepaths)} pre-ban screenshots to channel ID {stats_channel_id}.")
+                                    except discord.Forbidden:
+                                        logger.error(f"Missing permissions to post pre-ban screenshots in channel ID {stats_channel_id}.")
+                                    except Exception as post_e:
+                                        logger.error(f"Failed to post pre-ban screenshots: {post_e}")
+                                elif not stats_channel:
+                                    logger.error(f"AUTO_STATS_CHAN (ID: {stats_channel_id}) not found for posting ban screenshots.")
+                                # --- End [NEW] ---
+                            else:
+                                logger.warning("Ban detected, but screenshot buffer was empty.")
+                        except Exception as ss_e:
+                            logger.error(f"An error occurred while saving/posting pre-ban screenshots: {ss_e}")
+                    # --- End [MODIFIED] ---
+
+                    self.state.is_banned = True # Set state *inside the lock*
+                    try:
+                        chat_channel = self.bot.get_channel(self.config.CHAT_CHANNEL_ID)
+                        if chat_channel:
+                            message = (
+                                f"@here The Streaming VC Bot just got banned on Omegle - Wait for Host OR use this URL in your browser to pay "
+                                f"for an unban - Afterwards, just !skip and it should be unbanned!\n"
+                                f"{current_url}"
+                            )
+                            ban_msg = await chat_channel.send(message)
+                            self.state.ban_message_id = ban_msg.id # Store the message ID to delete it later
+                            logger.info(f"Sent ban notification (ID: {ban_msg.id}) to channel ID {self.config.CHAT_CHANNEL_ID}.")
+                    except Exception as e:
+                        logger.error(f"Failed to send ban notification: {e}")
+            # --- END FIX ---
 
             # --- UNBAN DETECTION ---
-            # If we see the main video URL and our state is currently banned, we've just been unbanned.
-            elif self.config.OMEGLE_VIDEO_URL in current_url and self.state.is_banned:
-                logger.info("Proactive check detected the main video page. Attempting to announce unban.")
-                try:
-                    chat_channel = self.bot.get_channel(self.config.CHAT_CHANNEL_ID)
-                    if chat_channel:
-                        # Delete the old ban message
-                        if self.state.ban_message_id:
-                            try:
-                                old_ban_msg = await chat_channel.fetch_message(self.state.ban_message_id)
-                                await old_ban_msg.delete()
-                                logger.info(f"Successfully deleted old ban message (ID: {self.state.ban_message_id}).")
-                            except discord.NotFound:
-                                logger.warning("Tried to delete old ban message, but it was already gone.")
-                            finally:
-                                self.state.ban_message_id = None
+            # --- FIX: Added lock ---
+            async with self.state.moderation_lock:
+                # If we see the main video URL and our state is currently banned, we've just been unbanned.
+                if self.config.OMEGLE_VIDEO_URL in current_url and self.state.is_banned:
+                    logger.info("Proactive check detected the main video page. Attempting to announce unban.")
+                    try:
+                        chat_channel = self.bot.get_channel(self.config.CHAT_CHANNEL_ID)
+                        if chat_channel:
+                            # Delete the old ban message
+                            if self.state.ban_message_id:
+                                try:
+                                    old_ban_msg = await chat_channel.fetch_message(self.state.ban_message_id)
+                                    await old_ban_msg.delete()
+                                    logger.info(f"Successfully deleted old ban message (ID: {self.state.ban_message_id}).")
+                                except discord.NotFound:
+                                    logger.warning("Tried to delete old ban message, but it was already gone.")
+                                finally:
+                                    self.state.ban_message_id = None # Clear ID *inside the lock*
 
-                        message = (
-                            f"@here We are now unbanned on Omegle! Feel free to rejoin the <#{self.config.STREAMING_VC_ID}> VC!"
-                        )
-                        await chat_channel.send(message)
-                        logger.info(f"Sent proactive unbanned notification to channel ID {self.config.CHAT_CHANNEL_ID}.")
+                            message = (
+                                f"@here We are now unbanned on Omegle! Feel free to rejoin the <#{self.config.STREAMING_VC_ID}> VC!"
+                            )
+                            await chat_channel.send(message)
+                            logger.info(f"Sent proactive unbanned notification to channel ID {self.config.CHAT_CHANNEL_ID}.")
 
-                        # SUCCESS: Only change the state AFTER the message is sent.
-                        self.state.is_banned = False
-                        logger.info("Bot state successfully updated to unbanned.")
+                            # SUCCESS: Only change the state AFTER the message is sent and old one deleted.
+                            self.state.is_banned = False # Set state *inside the lock*
+                            logger.info("Bot state successfully updated to unbanned.")
 
-                except Exception as e:
-                    logger.error(f"Failed to send proactive unbanned notification: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to send proactive unbanned notification: {e}")
+            # --- END FIX ---
 
         except UnexpectedAlertPresentException:
             try:
