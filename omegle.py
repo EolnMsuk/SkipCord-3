@@ -518,6 +518,8 @@ class OmegleHandler:
                 logger.info("Relay command armed to be sent on the next skip after refresh.")
 
             logger.info("Selenium: Page refreshed successfully.")
+            await asyncio.sleep(2.0)
+            await self.find_and_click_checkbox()
             return True
         except Exception as e:
             logger.error(f"Selenium page refresh failed: {e}")

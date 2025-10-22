@@ -245,7 +245,8 @@ helper = BotHelper(
     bot_config,
     save_state_async,
     lambda: asyncio.create_task(play_next_song()),
-    omegle_handler=omegle_handler # --- FIX: Pass omegle_handler ---
+    omegle_handler=omegle_handler,
+    update_menu_func=lambda: asyncio.create_task(update_music_menu())
 )
 
 @tasks.loop(minutes=14)
@@ -293,19 +294,6 @@ async def check_ban_status_task():
 @check_ban_status_task.before_loop
 async def before_check_ban_status_task():
     await bot.wait_until_ready()
-
-# --- [NEW TASK] ---
-@tasks.loop(seconds=31)
-async def periodic_checkbox_clicker():
-    """Periodically checks for and clicks a checkbox on the page."""
-    if not state.omegle_enabled or not omegle_handler:
-        return
-    await omegle_handler.find_and_click_checkbox()
-
-@periodic_checkbox_clicker.before_loop
-async def before_periodic_checkbox_clicker():
-    await bot.wait_until_ready()
-# --- [END NEW TASK] ---
 
 # --- NEW: Function to dynamically update the music menu ---
 async def update_music_menu():
@@ -539,6 +527,34 @@ async def ensure_voice_connection() -> bool:
         return True
     except Exception as e:
         logger.error(f"Failed to establish a new voice connection to {target_vc.name}: {e}", exc_info=True)
+        
+        # --- [NEW ERROR REPORTING BLOCK] ---
+        # Report this failure to Discord with a 5-minute cooldown to prevent spam
+        current_time = time.time()
+        async with state.cooldown_lock: # Use the existing cooldown lock
+            if current_time - state.last_vc_connect_fail_time > 300: # 300 seconds = 5 minutes
+                state.last_vc_connect_fail_time = current_time
+                try:
+                    # --- [MODIFIED BLOCK] ---
+                    # Send error to the dedicated log channel if configured
+                    log_channel_id = bot_config.LOG_GC
+                    if log_channel_id:
+                        channel = bot.get_channel(log_channel_id)
+                        if channel:
+                            await channel.send(
+                                f"⚠️ **Music Bot Error:**\n"
+                                f"Failed to connect to the voice channel. I will keep retrying in the background.\n"
+                                f"*Please check my permissions in the VC.*\n"
+                                f"Error: `{e}`"
+                            )
+                        else:
+                            logger.error(f"LOG_GC channel (ID: {log_channel_id}) not found. Cannot send VC connection error.")
+                    # If LOG_GC is not set, the error is only logged to the console/file.
+                    # --- [END MODIFIED BLOCK] ---
+                except Exception as send_e:
+                    logger.error(f"Failed to send VC connection error to LOG_GC: {send_e}")
+        # --- [END NEW ERROR REPORTING BLOCK] ---
+                    
         # As a final failsafe, check if another task connected while this one failed.
         if guild.voice_client and guild.voice_client.is_connected():
             bot.voice_client_music = guild.voice_client
@@ -1232,9 +1248,19 @@ async def on_ready() -> None:
     logger.info(f"Bot is online as {bot.user}")
     bot.state.is_interrupting_for_search = False
     try:
-        channel = bot.get_channel(bot_config.CHAT_CHANNEL_ID)
-        if channel:
-            await channel.send("✅ Bot is online and ready!")
+        # --- [MODIFIED BLOCK] ---
+        # Send online message to the dedicated log channel if configured
+        log_channel_id = bot_config.LOG_GC
+        if log_channel_id:
+            channel = bot.get_channel(log_channel_id)
+            if channel:
+                await channel.send("✅ Bot is online and ready!")
+            else:
+                logger.error(f"LOG_GC channel (ID: {log_channel_id}) not found. Cannot send online message.")
+        else:
+            # If LOG_GC is not set, just log to console.
+            logger.info("LOG_GC not set in config. Skipping 'Bot is online' message in Discord.")
+        # --- [END MODIFIED BLOCK] ---
     except Exception as e:
         logger.error(f"Failed to send online message: {e}")
 
@@ -1270,11 +1296,7 @@ async def on_ready() -> None:
 
         if state.omegle_enabled:
             if await omegle_handler.initialize():
-                # --- [NEW TASK START] ---
-                if not periodic_checkbox_clicker.is_running():
-                    periodic_checkbox_clicker.start()
-                    logger.info("Periodic checkbox clicker task started (post-browser launch).")
-                # --- [END NEW TASK START] ---
+                pass
             else:
                 logger.critical("Selenium initialization failed.")
         else:
@@ -2191,7 +2213,6 @@ def extract_youtube_url(query: str) -> Optional[str]:
         return f"https://www.youtube.com/watch?v={video_id}"
     return None
 
-# In bot.py
 
 @bot.command(name='msearch', aliases=['m'])
 @require_user_preconditions()
@@ -2321,6 +2342,8 @@ async def msearch(ctx, *, query: str):
             response_msg += f" ({skipped_count} duplicates were skipped)."
         await status_msg.edit(content=response_msg)
 
+        asyncio.create_task(update_music_menu())
+
         if was_idle and added_count > 0:
             await play_next_song()
 
@@ -2416,6 +2439,7 @@ async def msearch(ctx, *, query: str):
         response_msg = f"✅ Added **{added_count}** songs to the queue from the playlist."
         if skipped_count > 0: response_msg += f" ({skipped_count} duplicates were skipped)."
         await ctx.send(response_msg)
+        asyncio.create_task(update_music_menu()) # --- NEW ---
         try: await status_msg.delete()
         except discord.NotFound: pass
 
@@ -2436,6 +2460,8 @@ async def msearch(ctx, *, query: str):
             was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
 
         await status_msg.edit(content=f"✅ Added **{song_title}** to the queue.")
+
+        asyncio.create_task(update_music_menu()) # --- NEW ---
 
         if was_idle:
             await play_next_song()
@@ -2577,6 +2603,7 @@ async def msearch(ctx, *, query: str):
                 response_msg = f"🎵 {interaction.user.mention} added {len(songs_to_add)} songs."
                 if already_in_queue_count > 0: response_msg += f" ({already_in_queue_count} were duplicates)."
                 await interaction.followup.send(response_msg)
+                asyncio.create_task(update_music_menu()) # --- NEW ---
                 if was_idle: await asyncio.create_task(play_next_song())
                 if self.current_page < self.total_pages - 1:
                     self.current_page += 1; self.update_components(); await interaction.message.edit(view=self)
@@ -2590,6 +2617,7 @@ async def msearch(ctx, *, query: str):
                     state.search_queue.append(selected_song)
                     was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
                 await interaction.followup.send(f"🎵 {interaction.user.mention} added **{selected_song['title']}** to the queue.")
+                asyncio.create_task(update_music_menu()) # --- NEW ---
                 if was_idle: await play_next_song()
 
         async def on_timeout(self):
@@ -2709,6 +2737,7 @@ async def playlist_load(ctx, *, name: Optional[str] = None):
     response_msg = f"✅ Playlist **{name}** loaded. Added {added_count} new songs."
     if skipped_count > 0: response_msg += f" Skipped {skipped_count} duplicate(s)."
     await ctx.send(response_msg)
+    asyncio.create_task(update_music_menu()) # --- NEW ---
     if was_idle and added_count > 0: await play_next_song()
 
 @playlist.command(name='list')
@@ -2909,16 +2938,16 @@ async def moff(ctx):
 @handle_errors
 async def mon(ctx):
     if state.music_enabled:
-        await ctx.send("Music features are already enabled.", delete_after=10)
+        await ctx.send("Music features are already enabled. Triggering a refresh of the command menus...", delete_after=10)
+        logger.info("!mon run while already enabled. Triggering full menu refresh task.")
+        asyncio.create_task(periodic_menu_update())
         return
-
     logger.warning(f"Music features ENABLED by {ctx.author.name}")
     state.music_enabled = True
-
-    await ctx.send("✅ Music features have been **ENABLED**. Connecting to voice...")
-
+    await ctx.send("✅ Music features have been **ENABLED**. Connecting to voice and refreshing menus...")
     await start_music_playback()
-    # --- ADDED SAVE ---
+    logger.info("!mon triggering full periodic_menu_update task.")
+    asyncio.create_task(periodic_menu_update())
     asyncio.create_task(save_state_async())
 
 

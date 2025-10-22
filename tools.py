@@ -225,6 +225,7 @@ class BotConfig:
     SS_LOCATION: Optional[str]
 
     # Optional Settings (with defaults)
+    LOG_GC: Optional[int] # <--- ADD THIS LINE
     ALT_VC_ID: List[int]
     ALLOWED_USERS: Set[int]
     ADMIN_ROLE_NAME: List[str]
@@ -290,6 +291,7 @@ class BotConfig:
             SS_LOCATION=getattr(config_module, 'SS_LOCATION', 'screenshots'),
 
             # --- Optional Settings (with defaults) ---
+            LOG_GC=getattr(config_module, 'LOG_GC', None), # <--- ADD THIS LINE
             ALT_VC_ID=getattr(config_module, 'ALT_VC_ID', []),
             ALLOWED_USERS=getattr(config_module, 'ALLOWED_USERS', set()),
             ADMIN_ROLE_NAME=getattr(config_module, 'ADMIN_ROLE_NAME', []),
@@ -446,6 +448,9 @@ class BotState:
     # Omegle ban state
     is_banned: bool = False
 
+    # --- [NEW VARIABLE] ---
+    last_vc_connect_fail_time: float = 0.0 # For VC connection error reporting
+
     # Transient state (not saved to disk)
     ban_message_id: Optional[int] = None
     music_menu_message_id: Optional[int] = None
@@ -550,6 +555,9 @@ class BotState:
             "music_menu_message_id": self.music_menu_message_id, # Added music menu ID
             "times_report_message_id": self.times_report_message_id, # Added times report ID
             "vc_moderation_active": self.vc_moderation_active, # Added VC mod state
+            
+            # --- [NEW LINE] ---
+            "last_vc_connect_fail_time": self.last_vc_connect_fail_time,
         }
 
     @classmethod
@@ -605,6 +613,9 @@ class BotState:
         state.music_menu_message_id = data.get("music_menu_message_id", None) # Added music menu ID
         state.times_report_message_id = data.get("times_report_message_id", None) # Added times report ID
         state.vc_moderation_active = data.get("vc_moderation_active", True) # Added VC mod state
+
+        # --- [NEW LINE] ---
+        state.last_vc_connect_fail_time = data.get("last_vc_connect_fail_time", 0.0)
 
         return state
 

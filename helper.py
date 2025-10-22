@@ -132,7 +132,7 @@ async def _button_callback_handler(interaction: discord.Interaction, command: st
 
         # Send public announcement message
         try:
-            announcement_content = f"{interaction.user.mention} used `{command}`"
+            announcement_content = f"**{interaction.user.display_name}** ({interaction.user.name}) used `{command}`"
             await interaction.channel.send(announcement_content)
             logger.info(f"Announced button use: {interaction.user.name} used {command}")
         except discord.Forbidden:
@@ -374,13 +374,14 @@ class BotHelper:
     A class that encapsulates the logic for various bot commands and event notifications.
     This promotes modularity by separating command implementation from the event listeners in `bot.py`.
     """
-    def __init__(self, bot: commands.Bot, state: BotState, bot_config: BotConfig, save_func: Optional[Callable] = None, play_next_song_func: Optional[Callable] = None, omegle_handler: Optional[OmegleHandler] = None): # --- FIX: Added omegle_handler ---
+    def __init__(self, bot: commands.Bot, state: BotState, bot_config: BotConfig, save_func: Optional[Callable] = None, play_next_song_func: Optional[Callable] = None, omegle_handler: Optional[OmegleHandler] = None, update_menu_func: Optional[Callable] = None): # --- FIX: Added omegle_handler and update_menu_func ---
         self.bot = bot
         self.state = state
         self.bot_config = bot_config
         self.save_state = save_func
         self.play_next_song = play_next_song_func
-        self.omegle_handler = omegle_handler # --- FIX: Store omegle_handler ---
+        self.omegle_handler = omegle_handler
+        self.update_music_menu = update_menu_func
         self.LEAVE_BATCH_DELAY_SECONDS = 10
 
     async def _schedule_leave_processing(self):
@@ -2001,6 +2002,9 @@ class BotHelper:
             # Send public confirmation to the channel the interaction happened in
             await ctx_or_interaction.channel.send(response_text)
             logger.info(f"Music queue and playback cleared by {author.name}")
+
+            if self.update_music_menu: # --- NEW ---
+                self.update_music_menu() # --- NEW ---
 
         elif confirmed.done() and confirmed.result() is False:
              # Optionally send ephemeral cancel confirmation via followup
