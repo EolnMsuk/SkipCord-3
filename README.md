@@ -24,7 +24,7 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 * **Camera Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs and applies escalating punishments for repeat violations (VC move -> short timeout -> long timeout).
 * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the recent screenshots locally, posts them to Discord for review, and logs details (including users present in the streaming VC) to a dedicated `ban.log` file.
 * **Clean Command Channel**: Automatically deletes old command messages to keep the control channel tidy, while pinning the interactive menus.
-* **Daily Auto-Stats**: Posts a full analytics report daily at a configured UTC time, then automatically clears all statistics for the next day.
+* **Daily Auto-Stats**: Posts a voice channel time report (`!times`) daily at a configured UTC time, then automatically clears VC time, command usage, and violation statistics for the next day.
 * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
 * **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression.
 
@@ -42,8 +42,8 @@ SkipCord-3 is a powerful, fully modular Discord bot designed for streamers who u
 
 ### 📊 Persistent State & Analytics
 
-* **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, and window geometry—is saved to `data.json` and reloaded on startup, ensuring no data is lost after a crash or restart.
-* **VC Time Tracking**: Tracks the cumulative time users spend in moderated voice channels, with daily leaderboards available via the `!times` command.
+* **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, window geometry, moderation settings, and menu message IDs—is saved to `data.json` and reloaded on startup, ensuring no data is lost after a crash or restart.
+* **VC Time Tracking**: Tracks the cumulative time users spend in moderated voice channels, with daily leaderboards available via the `!times` command (also shown in the command channel menu).
 
 <img width="376" height="322" alt="4" src="https://github.com/user-attachments/assets/f214d515-b9a3-4995-b2a1-bfbaf204e3b0" />
 
@@ -89,6 +89,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
 * `!timeouts`: Shows currently timed-out users.
 * `!rtimeouts`: Removes all active timeouts.
 * `!display <user>`: Shows a detailed profile for a user.
+* `!role <role>`: Lists all members in a specified role.
 * `!commands`: Shows this list of all commands.
 * `!mon`: Enables music features and connects the bot.
 * `!moff`: Disables music features and disconnects the bot.
@@ -131,42 +132,46 @@ The bot keeps administrators informed with a robust, event-driven notification s
 * **Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
 
 ```
+
 pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spotipy
+
 ```
 
 ### 2. Create a Discord Bot
 
-1. Navigate to the [Discord Developer Portal](https://discord.com/developers/applications) and create a new application.
-2. Go to the **"Bot"** tab and enable the following **Privileged Gateway Intents**:
- * ✅ **Message Content Intent**
- * ✅ **Server Members Intent**
-3. Click **"Reset Token"** to reveal your bot's token. **Copy this value immediately and store it securely.**
-4. Go to the **"OAuth2" -> "URL Generator"** tab. Select the `bot` and `applications.commands` scopes.
-5. In the "Bot Permissions" section, select `Administrator`.
-6. Copy the generated URL and use it to invite the bot to your server.
+1.  Navigate to the [Discord Developer Portal](https://discord.com/developers/applications) and create a new application.
+2.  Go to the **"Bot"** tab and enable the following **Privileged Gateway Intents**:
+    * ✅ **Message Content Intent**
+    * ✅ **Server Members Intent**
+3.  Click **"Reset Token"** to reveal your bot's token. **Copy this value immediately and store it securely.**
+4.  Go to the **"OAuth2" -> "URL Generator"** tab. Select the `bot` and `applications.commands` scopes.
+5.  In the "Bot Permissions" section, select `Administrator`.
+6.  Copy the generated URL and use it to invite the bot to your server.
 
 ### 3. Set up Spotify API (Optional)
 
 To enable playing songs, albums, and playlists from Spotify links, you need API credentials.
 
-1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/) and log in.
-2. Click **"Create app"**.
-3. Give your app a **Name** and **Description** (e.g., "SkipCord Bot") and agree to the terms.
-4. Once created, you will see your **Client ID**. Click **"Show client secret"** to reveal the **Client Secret**.
-5. **Copy both the Client ID and Client Secret.** You will need them for the next step.
+1.  Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/) and log in.
+2.  Click **"Create app"**.
+3.  Give your app a **Name** and **Description** (e.g., "SkipCord Bot") and agree to the terms.
+4.  Once created, you will see your **Client ID**. Click **"Show client secret"** to reveal the **Client Secret**.
+5.  **Copy both the Client ID and Client Secret.** You will need them for the next step.
 
 ### 4. File Setup
 
-1. Create a folder for your bot and place all the provided Python files (`bot.py`, `helper.py`, `omegle.py`, `tools.py`) inside.
-2. Create a new file in the same folder named `.env` (note the leading dot).
-3. Open the `.env` file and add your credentials in the following format. Replace the placeholder text with the actual values you copied.
+1.  Create a folder for your bot and place all the provided Python files (`bot.py`, `helper.py`, `omegle.py`, `tools.py`) inside.
+2.  Create a new file in the same folder named `.env` (note the leading dot).
+3.  Open the `.env` file and add your credentials in the following format. Replace the placeholder text with the actual values you copied.
 
 ```
+
 # .env file
 
 BOT\_TOKEN=YOUR\_DISCORD\_BOT\_TOKEN\_HERE
 SPOTIPY\_CLIENT\_ID=YOUR\_SPOTIFY\_CLIENT\_ID\_HERE
 SPOTIPY\_CLIENT\_SECRET=YOUR\_SPOTIFY\_CLIENT\_SECRET\_HERE
+
 ````
 
 > **Note:** If you are not setting up Spotify, you can leave the `SPOTIPY` lines blank, but the `BOT_TOKEN` is required.
