@@ -11,10 +11,10 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 
 ### 🌐 Interactive Stream Control
 
-* **Intuitive Button Menus**: Users control the stream (`!skip`, `!report`, `!info`) and music (`!mskip`, `!mpauseplay`) with persistent button menus. Includes an auto-updating leaderboard for top VC users (`!times`).
+* **Intuitive Button Menus**: Users control the stream (`!skip`, `!report`, `!info`) and music (`!mskip`, `!mpauseplay`) with persistent button menus. The music menu dynamically updates with the current song, playback status, mode, volume, and queue length. Includes an auto-updating leaderboard for top VC users (`!times`).
 * **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine.
 * **Auto-Start**: Automatically starts the stream by running `!skip` as soon as the first user joins the streaming VC with their camera on (configurable).
-* **Auto-Pause**: Intelligently triggers a browser page refresh (`!refresh` / pause command) *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth.
+* **Auto-Pause**: Intelligently triggers a browser page refresh (`!refresh` / pause command) *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth. The bot also automatically handles common elements like terms checkboxes after a refresh.
 * **Public Action Feed**: Button commands like `!skip` are now announced publicly in the command channel for better transparency.
 
 <img width="378" height="201" alt="1" src="https://github.com/user-attachments/assets/dad5b1a0-7cc6-4b4b-9e1b-b1b7c96b52ff" />
@@ -26,7 +26,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Clean Command Channel**: Automatically deletes old command messages to keep the control channel tidy, while pinning the interactive menus.
 * **Daily Auto-Stats**: Posts a voice channel time report (`!times`) daily at a configured UTC time, then automatically clears VC time, command usage, and violation statistics for the next day.
 * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
-* **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression.
+* **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression. Status messages and critical errors (like VC connection failures) can be sent to a dedicated Discord log channel (configurable via `LOG_GC`).
 
 <img width="1271" height="538" alt="2" src="https://github.com/user-attachments/assets/3c6de1af-c9a7-4474-a498-dbeaf4af19de" />
 
@@ -37,8 +37,9 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Persistent Playlists**: Save the current queue as a named playlist, then load, list, or delete playlists at any time.
 * **Multiple Playback Modes**: Effortlessly cycle between **Shuffle**, **Alphabetical**, and **Loop** modes.
 * **Automatic Management**: The bot joins the VC when users with cameras are present and leaves when it's empty to conserve resources.
+* **Dynamic Menu**: The interactive music control menu updates in real-time to show the current song, playback status, volume, mode, and queue length.
 
-<img width="420" height="282" alt="3" src="https://github.com/user-attachments/assets/e54fe401-1d86-4d06-8772-b966b38b3b75" />
+<img width="420" height="282" alt="3" src="https://github.com/user-attachments/assets/e54fe401-1d86-4d06-8772-b966c38b3b75" />
 
 ### 📊 Persistent State & Analytics
 
@@ -53,7 +54,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
 
 * **Member Activity**: Joins, Leaves (batched for mass departures), Kicks, Bans, and Unbans.
 * **Moderation Actions**: Timeouts Added/Removed and Role Changes.
-* **Bot & Stream Status**: Bot Online, Stream Auto-Pause, Browser Health, and Omegle Ban/Unban status notifications (including pre-ban screenshots).
+* **Bot & Stream Status**: Bot Online, Stream Auto-Pause, Browser Health (including VC connection errors sent to the configured `LOG_GC` channel), and Omegle Ban/Unban status notifications (including pre-ban screenshots).
 
 <img width="445" height="493" alt="5" src="https://github.com/user-attachments/assets/ede4dc10-f7fd-47d8-b228-ce8bd46a90ec" />
 
@@ -64,7 +65,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
 *(Requires being in the Streaming VC with camera on)*
 
 * `!skip` / `!start`: Skips the current Omegle user.
-* `!refresh` / `!pause`: Refreshes the Omegle browser page (like F5).
+* `!refresh` / `!pause`: Refreshes the Omegle browser page (like F5) and attempts to handle initial prompts like checkboxes.
 * `!info` / `!about`: Shows server information and rules.
 * `!rules`: Displays the server rules.
 * `!times`: Shows the top 10 most active VC users.
@@ -91,7 +92,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
 * `!display <user>`: Shows a detailed profile for a user.
 * `!role <role>`: Lists all members in a specified role.
 * `!commands`: Shows this list of all commands.
-* `!mon`: Enables music features and connects the bot.
+* `!mon`: Enables music features and connects the bot. Refreshes menus if already enabled.
 * `!moff`: Disables music features and disconnects the bot.
 
 ### 👑 Owner Commands (Allowed Users Only)
@@ -196,6 +197,7 @@ ALLOWED_USERS = {123456789012345678, 987654321098765432} # User IDs with full bo
 ADMIN_ROLE_NAME = ["Admin", "Moderator"] # Roles that can use admin commands
 
 # --- OPTIONAL FEATURES ---
+LOG_GC = None                        # Channel ID for bot status/error messages (e.g., online, VC connect fail)
 # (Set to None to disable)
 ALT_VC_ID = []                       # List of additional voice channel IDs to moderate
 AUTO_STATS_CHAN = 123456789012345678 # Channel for daily auto-stats reports
@@ -261,7 +263,7 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down
   * **"WebDriver" Error**: Make sure your Edge browser is fully updated. If automatic detection fails, you can manually download the correct `msedgedriver.exe` for your Edge version from the [Microsoft Edge WebDriver page](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/) and specify its full path (including `msedgedriver.exe`) in `config.py` via the `EDGE_DRIVER_PATH` setting.
   * **Music Doesn't Play**: Confirm that **FFmpeg** is installed and its location is included in your system's PATH environment variable. Check `bot.log` for specific FFmpeg errors.
   * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct and have no extra spaces.
-  * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages.
+  * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages. Check the configured `LOG_GC` channel in Discord for status messages.
 
 ### Donations
 
