@@ -132,9 +132,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
 * **Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
 
 ```
-
 pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spotipy
-
 ```
 
 ### 2. Create a Discord Bot
@@ -165,13 +163,11 @@ To enable playing songs, albums, and playlists from Spotify links, you need API 
 3.  Open the `.env` file and add your credentials in the following format. Replace the placeholder text with the actual values you copied.
 
 ```
-
 # .env file
 
 BOT\_TOKEN=YOUR\_DISCORD\_BOT\_TOKEN\_HERE
 SPOTIPY\_CLIENT\_ID=YOUR\_SPOTIFY\_CLIENT\_ID\_HERE
 SPOTIPY\_CLIENT\_SECRET=YOUR\_SPOTIFY\_CLIENT\_SECRET\_HERE
-
 ````
 
 > **Note:** If you are not setting up Spotify, you can leave the `SPOTIPY` lines blank, but the `BOT_TOKEN` is required.
