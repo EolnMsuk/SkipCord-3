@@ -193,7 +193,8 @@ ALLOWED_STATS_COMMANDS = {
     "!clearstats", "!start", "!pause", "!clearwhois", "!msearch", "!mclear", "!mshuffle",
     "!mpauseplay", "!mskip", "!nowplaying", "!np", "!queue", "!q", "!playlist", "!volume",
     "!mon", "!moff", "!help", "!music", "!purge", "!shutdown", "!disable", "!enable",
-    "!disablenotifications", "!enablenotifications", "!ban", "!unbanall", "!display"
+    "!disablenotifications", "!enablenotifications", "!ban", "!unbanall", "!display",
+    "!move", # <-- ADD NEW COMMAND
 }
 
 def record_command_usage(analytics: Dict[str, Any], command_name: str) -> None:
@@ -225,10 +226,11 @@ class BotConfig:
     SS_LOCATION: Optional[str]
 
     # Optional Settings (with defaults)
-    LOG_GC: Optional[int] # <--- ADD THIS LINE
+    LOG_GC: Optional[int]
     ALT_VC_ID: List[int]
     ALLOWED_USERS: Set[int]
     ADMIN_ROLE_NAME: List[str]
+    MOVE_ROLE_NAME: List[str] # <-- ADD THIS LINE
     JOIN_INVITE_MESSAGE: str
     ENABLE_GLOBAL_HOTKEY: bool
     GLOBAL_HOTKEY_COMBINATION: str
@@ -291,10 +293,11 @@ class BotConfig:
             SS_LOCATION=getattr(config_module, 'SS_LOCATION', 'screenshots'),
 
             # --- Optional Settings (with defaults) ---
-            LOG_GC=getattr(config_module, 'LOG_GC', None), # <--- ADD THIS LINE
+            LOG_GC=getattr(config_module, 'LOG_GC', None),
             ALT_VC_ID=getattr(config_module, 'ALT_VC_ID', []),
             ALLOWED_USERS=getattr(config_module, 'ALLOWED_USERS', set()),
             ADMIN_ROLE_NAME=getattr(config_module, 'ADMIN_ROLE_NAME', []),
+            MOVE_ROLE_NAME=getattr(config_module, 'MOVE_ROLE_NAME', []), # <-- ADD THIS LINE
             JOIN_INVITE_MESSAGE=getattr(config_module, 'JOIN_INVITE_MESSAGE', ""),
             ENABLE_GLOBAL_HOTKEY=getattr(config_module, 'ENABLE_GLOBAL_HOTKEY', False),
             GLOBAL_HOTKEY_COMBINATION=getattr(config_module, 'GLOBAL_HOTKEY_COMBINATION', 'alt+grave'),
@@ -362,6 +365,7 @@ async def build_role_update_embed(member: discord.Member, roles_gained: List[dis
 
 # Type Aliases for BotState clarity
 Cooldowns = Dict[int, Tuple[float, bool]]
+MoveCooldowns = Dict[int, float] # <-- ADD THIS LINE
 ViolationCounts = Dict[int, int]
 ActiveTimeouts = Dict[int, Dict[str, Any]]
 JoinHistory = List[Tuple[int, str, Optional[str], datetime]]
@@ -394,10 +398,13 @@ class BotState:
     cooldown_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     screenshot_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False) # New lock for screenshots
     music_startup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    menu_repost_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+
 
     # --- State Data ---
     cooldowns: Cooldowns = field(default_factory=dict)
     button_cooldowns: Cooldowns = field(default_factory=dict)
+    move_command_cooldowns: MoveCooldowns = field(default_factory=dict) # <-- ADD THIS LINE
     last_omegle_command_time: float = 0.0
     camera_off_timers: Dict[int, float] = field(default_factory=dict)
     user_violations: ViolationCounts = field(default_factory=dict)
@@ -436,7 +443,7 @@ class BotState:
     current_song: Optional[Dict[str, Any]] = None # {'title': str, 'path': str, 'is_stream': bool}
     is_music_playing: bool = False
     is_music_paused: bool = False
-    is_processing_song: bool = False # FIX: New flag to prevent watchdog race condition
+    is_processing_song: bool = False
     music_mode: str = 'shuffle'  # 'shuffle', 'alphabetical', 'loop'
     music_volume: float = 0.2
     playlists: Playlists = field(default_factory=dict)
@@ -502,6 +509,7 @@ class BotState:
             "user_violations": self.user_violations,
             "active_timeouts": self.active_timeouts,
             "notifications_enabled": self.notifications_enabled,
+            "move_command_cooldowns": self.move_command_cooldowns, # <-- ADD THIS LINE
             "recent_joins": [
                 {"id": e[0], "name": e[1], "display_name": e[2], "timestamp": e[3].isoformat()}
                 for e in self.recent_joins
@@ -581,6 +589,7 @@ class BotState:
         state.omegle_disabled_users = set(data.get("omegle_disabled_users", []))
         state.omegle_enabled = data.get("omegle_enabled", True)
         state.relay_command_sent = data.get("relay_command_sent", False)
+        state.move_command_cooldowns = {int(k): v for k, v in data.get("move_command_cooldowns", {}).items()} # <-- ADD THIS LINE
 
         state.recent_joins = [(e["id"], e["name"], e["display_name"], datetime.fromisoformat(e["timestamp"])) for e in data.get("recent_joins", [])]
         state.recent_leaves = [(e["id"], e["name"], e["display_name"], datetime.fromisoformat(e["timestamp"]), e["roles"]) for e in data.get("recent_leaves", [])]
@@ -642,12 +651,15 @@ class BotState:
         seven_days_ago_dt = now - timedelta(days=7)
 
         # Acquire main state locks in the consistent order (vc -> analytics -> moderation -> music)
-        async with self.vc_lock, self.analytics_lock, self.moderation_lock, self.music_lock: # --- FIX: Consolidated locks ---
+        async with self.vc_lock, self.analytics_lock, self.moderation_lock, self.music_lock:
 
             # Clean up expired cooldowns (uses a separate lock).
             async with self.cooldown_lock:
                 self.cooldowns = {k: v for k, v in self.cooldowns.items() if current_time - v[0] < (self.config.COMMAND_COOLDOWN * 2)}
                 self.button_cooldowns = {k: v for k, v in self.button_cooldowns.items() if current_time - v[0] < (self.config.COMMAND_COOLDOWN * 2)}
+                # Clean up move cooldowns (1 hour + 5 min buffer)
+                self.move_command_cooldowns = {k: v for k, v in self.move_command_cooldowns.items() if current_time - v < 3900}
+
 
             # Clean up expired moderation data (uses moderation_lock - already acquired).
             self.active_timeouts = {k: v for k, v in self.active_timeouts.items() if v.get('timeout_end', float('inf')) > current_time}

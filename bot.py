@@ -20,7 +20,10 @@ from typing import Any, Callable, Optional
 import discord
 import keyboard
 import yt_dlp
+# --- [MODIFICATION] ---
 from discord.ext import commands, tasks
+from discord.errors import ClientException
+# --- [END MODIFICATION] ---
 from dotenv import load_dotenv
 from loguru import logger
 import mutagen
@@ -90,6 +93,7 @@ intents = discord.Intents.default()
 intents.message_content = True  # Required for reading message content
 intents.members = True          # Required for tracking member updates (joins, roles, etc.)
 bot = commands.Bot(command_prefix="!", help_command=None, intents=intents)
+bot.is_fully_ready = False
 
 # Initialize the handler for Selenium-based browser automation
 omegle_handler = OmegleHandler(bot, bot_config)
@@ -265,7 +269,7 @@ async def periodic_geometry_save():
             # Minimized windows can return negative positions like (-32000, -32000).
             if position.get('x', -1) >= 0 and position.get('y', -1) >= 0:
                 # Use the moderation_lock, as this is part of the Omegle state
-                async with state.moderation_lock:  # <--- FIXED
+                async with state.moderation_lock:
                     # Only update if the values have changed
                     if state.window_size != size or state.window_position != position:
                         state.window_size = size
@@ -314,9 +318,12 @@ async def update_music_menu():
              await message_to_edit.edit(embed=new_embed, view=new_view)
 
     except discord.NotFound:
-        # The message was deleted (likely by the purge). Clear the ID.
-        logger.info("Music menu message not found for update, clearing ID. A new one will be posted shortly.")
+        # The message was deleted. Clear the ID and trigger a full repost.
+        logger.info("Music menu message not found for update. Clearing ID and triggering full menu repost.")
         state.music_menu_message_id = None
+        # --- CALL THE NEW REPOST FUNCTION ---
+        asyncio.create_task(_trigger_full_menu_repost())
+        # --- END CHANGE ---
     except discord.Forbidden:
         logger.warning(f"Lacking permissions to edit the music menu message in #{channel.name}.")
         state.music_menu_message_id = None # Stop trying if we can't edit it.
@@ -324,7 +331,7 @@ async def update_music_menu():
         logger.error(f"Failed to update music menu: {e}", exc_info=True)
 
 # --- NEW: Task for auto-deleting old command messages ---
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=2)
 async def auto_delete_old_commands():
     """Periodically deletes messages older than 1 minute in the command channel, ignoring menus."""
     try:
@@ -387,8 +394,11 @@ async def periodic_times_report_update():
             logger.info("Successfully updated the periodic !times report.")
 
     except discord.NotFound:
-        logger.info("!times report message not found for update, clearing ID. The main refresh will recreate it.")
+        logger.info("!times report message not found for update. Clearing ID and triggering full menu repost.")
         state.times_report_message_id = None
+        # --- CALL THE NEW REPOST FUNCTION ---
+        asyncio.create_task(_trigger_full_menu_repost())
+        # --- END CHANGE ---
     except discord.Forbidden:
         logger.warning(f"Lacking permissions to edit the !times report message in #{channel.name}.")
         state.times_report_message_id = None # Stop trying
@@ -419,7 +429,6 @@ async def global_skip() -> None:
         logger.error("Guild not found for global skip.")
 
 async def global_mskip() -> None:
-    # --- FIX: Moved checks inside the lock ---
     async with state.music_lock:
         if not state.music_enabled or not bot.voice_client_music or not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()):
             logger.warning("Global mskip hotkey pressed, but nothing is playing or music is disabled.")
@@ -431,7 +440,6 @@ async def global_mskip() -> None:
         state.is_music_paused = False
         bot.voice_client_music.stop()
     logger.info("Executed global music skip command via hotkey.")
-    # --- END FIX ---
 
 async def global_mpause() -> None:
     """Executes a music pause/resume command triggered by a global hotkey."""
@@ -481,10 +489,13 @@ async def global_mvoldown() -> None:
 # Music Core Logic
 #########################################
 
+
+# bot.py (Replace the existing ensure_voice_connection function again)
+
 async def ensure_voice_connection() -> bool:
     """
     Ensures the bot is connected to the correct voice channel, handling reconnections gracefully.
-    This modern approach prioritizes checking the existing state before acting to prevent conflicts.
+    Includes extra debug logging to trace error reporting.
     """
     if not state.music_enabled:
         return False
@@ -501,66 +512,136 @@ async def ensure_voice_connection() -> bool:
 
     voice_client = guild.voice_client
 
-    # Case 1: Bot is already perfectly connected.
+    # Case 1: Already connected correctly.
     if voice_client and voice_client.is_connected() and voice_client.channel == target_vc:
-        bot.voice_client_music = voice_client # Ensure our reference is up-to-date
+        logger.debug("Ensure VC: Already connected correctly (Case 1).")
+        bot.voice_client_music = voice_client
         return True
 
-    # Case 2: Bot is connected, but in the wrong channel. Move it.
-    if voice_client and voice_client.is_connected():
-        logger.info(f"Bot is in the wrong channel ({voice_client.channel.name}). Moving to {target_vc.name}...")
+    # Case 2: Connected to wrong channel.
+    if voice_client and voice_client.is_connected() and voice_client.channel != target_vc:
+        logger.info(f"Ensure VC: Connected to wrong channel ({voice_client.channel.name}). Moving... (Case 2)")
         try:
             await voice_client.move_to(target_vc)
-            bot.voice_client_music = voice_client # Update reference
-            logger.info("Successfully moved voice client.")
+            bot.voice_client_music = voice_client
+            logger.info("Ensure VC: Successfully moved.")
             return True
         except Exception as e:
-            logger.error(f"Failed to move voice client: {e}. Attempting a full reconnect.")
-            # If the move fails, force a disconnect to clear the broken state.
-            await voice_client.disconnect(force=True)
+            logger.error(f"Ensure VC: Move failed: {e}. Disconnecting for reconnect attempt.")
+            try:
+                await voice_client.disconnect(force=True)
+            except Exception as dis_e:
+                 logger.error(f"Ensure VC: Error during disconnect after move failure: {dis_e}")
+            # Fall through to Case 3
 
-    # Case 3: Bot is not connected, or was in a zombie state and has now been disconnected.
-    logger.info(f"Attempting to connect to {target_vc.name}...")
+    # Case 3: Not connected or disconnected. Attempt connection.
+    logger.info(f"Ensure VC: Attempting connection... (Case 3)")
+    error_to_report = None
+
     try:
+        # Final pre-connect check
+        if guild.voice_client and guild.voice_client.is_connected():
+             logger.warning("Ensure VC: Bot connected unexpectedly before await connect(). Using existing.")
+             bot.voice_client_music = guild.voice_client
+             if bot.voice_client_music.channel != target_vc:
+                  logger.info(f"Ensure VC: Moving unexpected connection from {bot.voice_client_music.channel.name}.")
+                  await bot.voice_client_music.move_to(target_vc)
+             return True # Handled
+
+        # Actual connection attempt
         bot.voice_client_music = await target_vc.connect(reconnect=True, timeout=60.0)
-        logger.info(f"Successfully connected to {target_vc.name}.")
-        return True
+        logger.info(f"Ensure VC: New connection successful to {target_vc.name}.")
+        return True # Success
+
+    except ClientException as e:
+        # --- Specific Debug Logging for ClientException ---
+        logger.debug(f"Ensure VC: Caught ClientException: {type(e).__name__} - {e}")
+        if "Already connected" in str(e):
+            logger.warning(f"Ensure VC: Race condition ('Already connected') caught. Verifying...")
+            # DO NOT set error_to_report here.
+            if guild.voice_client and guild.voice_client.is_connected():
+                 logger.info("Ensure VC: Verified existing connection after race.")
+                 bot.voice_client_music = guild.voice_client
+                 if bot.voice_client_music.channel != target_vc:
+                      logger.warning(f"Ensure VC: Race connected to wrong channel ({bot.voice_client_music.channel.name}). Moving...")
+                      try:
+                          await bot.voice_client_music.move_to(target_vc)
+                          logger.info("Ensure VC: Move after race successful.")
+                          return True # Handled successfully
+                      except Exception as move_e:
+                           logger.error(f"Ensure VC: Move after race failed: {move_e}")
+                           # Logged, but don't report via Discord. Proceed to failsafe.
+                 else:
+                     return True # Already in correct channel after race
+            else:
+                 logger.error("Ensure VC: 'Already connected' error, but verification failed!")
+            # Explicitly ensure no reporting for this path
+            error_to_report = None
+            logger.debug("Ensure VC: error_to_report explicitly set to None for 'Already connected'.")
+        else:
+             # Other ClientExceptions ARE reportable
+             logger.error(f"Ensure VC: Reporting non-race ClientException.", exc_info=True)
+             error_to_report = e
+             logger.debug(f"Ensure VC: error_to_report set to: {error_to_report}")
+
     except Exception as e:
-        logger.error(f"Failed to establish a new voice connection to {target_vc.name}: {e}", exc_info=True)
-        
-        # --- [NEW ERROR REPORTING BLOCK] ---
-        # Report this failure to Discord with a 5-minute cooldown to prevent spam
+        # --- Specific Debug Logging for General Exception ---
+        logger.debug(f"Ensure VC: Caught generic Exception: {type(e).__name__} - {e}")
+        # Generic errors ARE reportable
+        logger.error(f"Ensure VC: Reporting generic Exception.", exc_info=True)
+        error_to_report = e
+        logger.debug(f"Ensure VC: error_to_report set to: {error_to_report}")
+
+    # --- Error Reporting Block ---
+    # --- ADDED DEBUG LOGGING HERE ---
+    logger.debug(f"Ensure VC: Reached error reporting block. error_to_report = {repr(error_to_report)}")
+    if error_to_report: # Check if it's not None
+        logger.debug(f"Ensure VC: Condition 'if error_to_report' is TRUE. Preparing to send message.") # <<< THIS IS KEY
         current_time = time.time()
-        async with state.cooldown_lock: # Use the existing cooldown lock
-            if current_time - state.last_vc_connect_fail_time > 300: # 300 seconds = 5 minutes
+        async with state.cooldown_lock:
+            if current_time - state.last_vc_connect_fail_time > 300:
                 state.last_vc_connect_fail_time = current_time
+                # --- ADDED DEBUG LOGGING HERE ---
+                logger.debug(f"Ensure VC: Cooldown passed. Attempting to send error to LOG_GC.")
                 try:
-                    # --- [MODIFIED BLOCK] ---
-                    # Send error to the dedicated log channel if configured
                     log_channel_id = bot_config.LOG_GC
                     if log_channel_id:
                         channel = bot.get_channel(log_channel_id)
                         if channel:
                             await channel.send(
                                 f"⚠️ **Music Bot Error:**\n"
-                                f"Failed to connect to the voice channel. I will keep retrying in the background.\n"
+                                f"Failed to connect/ensure voice channel connection. I will keep retrying.\n"
                                 f"*Please check my permissions in the VC.*\n"
-                                f"Error: `{e}`"
+                                f"Error: `{error_to_report}`"
                             )
+                            logger.debug(f"Ensure VC: Successfully sent error message to LOG_GC.") # <<< Check if this appears
                         else:
-                            logger.error(f"LOG_GC channel (ID: {log_channel_id}) not found. Cannot send VC connection error.")
-                    # If LOG_GC is not set, the error is only logged to the console/file.
-                    # --- [END MODIFIED BLOCK] ---
+                            logger.error(f"LOG_GC channel (ID: {log_channel_id}) not found.")
                 except Exception as send_e:
                     logger.error(f"Failed to send VC connection error to LOG_GC: {send_e}")
-        # --- [END NEW ERROR REPORTING BLOCK] ---
-                    
-        # As a final failsafe, check if another task connected while this one failed.
-        if guild.voice_client and guild.voice_client.is_connected():
-            bot.voice_client_music = guild.voice_client
+            else:
+                 logger.debug(f"Ensure VC: Error reporting cooldown active. Skipping message send.")
+    else:
+         logger.debug(f"Ensure VC: Condition 'if error_to_report' is FALSE. Skipping message send.") # <<< Expect this for "Already connected"
+
+    # --- Final Failsafe Check ---
+    # ... (rest of the function is unchanged) ...
+    if guild.voice_client and guild.voice_client.is_connected():
+        logger.info("Ensure VC: Failsafe check found a valid connection.")
+        bot.voice_client_music = guild.voice_client
+        if bot.voice_client_music.channel == target_vc:
             return True
-        bot.voice_client_music = None
-        return False
+        else:
+            logger.warning(f"Ensure VC: Failsafe connection in wrong channel ({bot.voice_client_music.channel.name}). Moving.")
+            try:
+                await bot.voice_client_music.move_to(target_vc)
+                return True # Success after failsafe move
+            except Exception as final_move_e:
+                logger.error(f"Ensure VC: Failsafe move failed: {final_move_e}")
+
+    bot.voice_client_music = None
+    return False
+
 
 async def scan_and_shuffle_music() -> int:
     """
@@ -753,7 +834,6 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
         await asyncio.sleep(0.5) 
         bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(after_playback_handler(e), bot.loop))
         
-        # --- FIX: Set is_processing_song to False *after* play starts ---
         async with state.music_lock:
             state.is_processing_song = False
 
@@ -786,6 +866,7 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
             state.is_processing_song = False
 
         asyncio.create_task(update_music_menu())
+        await asyncio.sleep(2.0)
         asyncio.create_task(play_next_song())
 
 # --- REVERTED after_playback_handler ---
@@ -845,8 +926,6 @@ async def play_next_song(error=None, is_recursive_call=False):
     if error:
         logger.error(f"Error in music player callback: {error}")
 
-    # FIX 1: A song has finished. We are no longer processing the *previous* song.
-    # --- THIS LINE WAS REMOVED ---
     # async with state.music_lock:
     #     state.is_processing_song = False
 
@@ -861,20 +940,20 @@ async def play_next_song(error=None, is_recursive_call=False):
             state.is_music_playing = False
             state.is_music_paused = False
             state.current_song = None
-            state.is_processing_song = False # --- FIX: Added flag reset ---
+            state.is_processing_song = False
             logger.info("Playback intentionally stopped after queue clear.")
             await bot.change_presence(activity=None)
             # NEW: Update menu to show nothing is playing
             asyncio.create_task(update_music_menu())
             return
 
-    # FIX 2: Ensure connection is solid *before* grabbing a song from the queue.
+    # Ensure connection is solid *before* grabbing a song from the queue.
     if not await ensure_voice_connection():
         logger.critical("Music playback stopped: Could not establish a voice connection.")
         async with state.music_lock: # Need a lock just to update state safely
             state.is_music_playing = False
             state.current_song = None
-            state.is_processing_song = False # --- FIX: Added flag reset ---
+            state.is_processing_song = False
         return
 
     # Lock to safely read and modify the queue state
@@ -903,7 +982,6 @@ async def play_next_song(error=None, is_recursive_call=False):
             if user_queue:
                 # Priority 2: Process the user-added queue based on the current mode.
                 
-                # --- FIX: Re-implemented shuffle mode to be race-safe ---
                 if state.music_mode == 'shuffle':
                     logger.info("Shuffle mode active. Picking a random song from the user queue.")
                     # 1. Pick a random song object
@@ -918,7 +996,6 @@ async def play_next_song(error=None, is_recursive_call=False):
                         except ValueError:
                             logger.error("Consistency error: Could not find the shuffled chosen song in any queue to remove it.")
                             song_to_play_info = None # Will cause fallback to local
-                # --- END FIX ---
 
                 elif state.music_mode == 'alphabetical':
                     logger.info("Alphabetical mode active. Picking the next song by title from the user queue.")
@@ -958,7 +1035,7 @@ async def play_next_song(error=None, is_recursive_call=False):
         if is_recursive_call:
             logger.error("Recursive call to play_next_song detected after a failed library scan. Halting to prevent infinite loop.")
             async with state.music_lock:
-                state.is_processing_song = False # --- FIX: Added flag reset ---
+                state.is_processing_song = False
             return
         logger.info("Local music queue is empty. Rescanning and reshuffling library...")
         await scan_and_shuffle_music()
@@ -981,7 +1058,7 @@ async def play_next_song(error=None, is_recursive_call=False):
             state.is_music_playing = False
             state.is_music_paused = False
             state.current_song = None
-            state.is_processing_song = False # --- FIX: Added flag reset ---
+            state.is_processing_song = False 
         logger.warning("Music playback finished. All queues and local library are empty.")
         await bot.change_presence(activity=None)
         # NEW: Update menu to show nothing is playing
@@ -1248,7 +1325,6 @@ async def on_ready() -> None:
     logger.info(f"Bot is online as {bot.user}")
     bot.state.is_interrupting_for_search = False
     try:
-        # --- [MODIFIED BLOCK] ---
         # Send online message to the dedicated log channel if configured
         log_channel_id = bot_config.LOG_GC
         if log_channel_id:
@@ -1260,7 +1336,6 @@ async def on_ready() -> None:
         else:
             # If LOG_GC is not set, just log to console.
             logger.info("LOG_GC not set in config. Skipping 'Bot is online' message in Discord.")
-        # --- [END MODIFIED BLOCK] ---
     except Exception as e:
         logger.error(f"Failed to send online message: {e}")
 
@@ -1309,7 +1384,6 @@ async def on_ready() -> None:
                 streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
                 if streaming_vc and any(m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice.self_video):
                      logger.info("Users detected in VC on startup, starting music playback.")
-                     asyncio.create_task(start_music_playback())
                 else:
                     logger.info("No active users in VC on startup. Music will start when a user joins with camera on.")
         else:
@@ -1339,6 +1413,8 @@ async def on_ready() -> None:
         asyncio.create_task(manage_menu_task_presence())
 
         logger.info("Initialization complete")
+
+        bot.is_fully_ready = True
 
     except Exception as e:
         logger.error(f"Error during on_ready: {e}", exc_info=True)
@@ -1408,6 +1484,10 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     Handles all updates to a member's voice state.
     This is a critical event for tracking VC time, enforcing camera rules, and auto-pausing the stream.
     """
+
+    if not getattr(bot, 'is_fully_ready', False):
+        return # Do not process any voice events until on_ready is complete
+
     if member.id == bot.user.id or member.bot:
         return
 
@@ -1679,49 +1759,115 @@ async def on_message(message: discord.Message) -> None:
 
 # --- Menu Update Task ---
 
-@tasks.loop(minutes=721)
-async def periodic_menu_update() -> None:
-    try:
-        guild = bot.get_guild(bot_config.GUILD_ID)
-        if not guild: return
-        channel = guild.get_channel(bot_config.COMMAND_CHANNEL_ID)
-        if not channel:
-            logger.warning(f"Help menu channel with ID {bot_config.COMMAND_CHANNEL_ID} not found.")
-            return
+# --- [NEW FUNCTION] ---
+async def _trigger_full_menu_repost():
+    """
+    Clears the command channel and reposts all standard menus (!times, !music, !help)
+    in the correct order. Includes a lock to prevent concurrent runs.
+    """
+    if state.menu_repost_lock.locked():
+        logger.info("Menu repost lock is held, skipping redundant repost trigger.")
+        return
 
-        # Clear the old message IDs before purging and re-posting
-        state.music_menu_message_id = None
-        state.times_report_message_id = None
+    async with state.menu_repost_lock:
+        logger.warning("Triggering a full menu repost due to a missing menu...")
+        try:
+            guild = bot.get_guild(bot_config.GUILD_ID)
+            if not guild: return
+            channel = guild.get_channel(bot_config.COMMAND_CHANNEL_ID)
+            if not channel:
+                logger.error(f"Cannot repost menus: Command channel ID {bot_config.COMMAND_CHANNEL_ID} not found.")
+                return
 
-        await safe_purge(channel, limit=100)
-        await asyncio.sleep(1)
+            # Clear the old message IDs
+            state.music_menu_message_id = None
+            state.times_report_message_id = None
 
-        # --- New Order: !times, !music, !help ---
+            await safe_purge(channel, limit=100)
+            await asyncio.sleep(1) # Small delay after purging
 
-        # 1. Post Times Report (Top) and store its ID
-        times_report_msg = await helper.show_times_report(channel)
-        if times_report_msg and hasattr(state, 'times_report_message_id'):
-            state.times_report_message_id = times_report_msg.id
-        await asyncio.sleep(1)
+            # --- Repost in Order ---
 
-        # 2. Post Music Menu (Middle) and store its ID
-        if state.music_enabled:
-            music_menu_msg = await helper.send_music_menu(channel)
-            if music_menu_msg and hasattr(state, 'music_menu_message_id'):
-                state.music_menu_message_id = music_menu_msg.id
+            # 1. Post Times Report
+            times_report_msg = await helper.show_times_report(channel)
+            if times_report_msg:
+                state.times_report_message_id = times_report_msg.id
             await asyncio.sleep(1)
 
-        # 3. Post Help Menu (Bottom)
-        if state.omegle_enabled:
-            await helper.send_help_menu(channel)
+            # 2. Post Music Menu
+            if state.music_enabled:
+                music_menu_msg = await helper.send_music_menu(channel)
+                if music_menu_msg:
+                    state.music_menu_message_id = music_menu_msg.id
+                await asyncio.sleep(1)
 
-    except Exception as e:
-        logger.error(f"Periodic menu update task failed: {e}", exc_info=True)
-        await asyncio.sleep(300)
+            # 3. Post Help Menu
+            if state.omegle_enabled:
+                await helper.send_help_menu(channel)
+
+            logger.info("Successfully completed triggered full menu repost.")
+
+        except Exception as e:
+            logger.error(f"Error during triggered menu repost: {e}", exc_info=True)
+            # Ensure lock is released even if there's an error during the process
+# --- [END NEW FUNCTION] ---
+
+
+@tasks.loop(minutes=721)
+async def periodic_menu_update() -> None:
+    """
+    The main periodic task that clears and reposts menus every ~12 hours.
+    Now uses the same lock as the triggered repost.
+    """
+    if state.menu_repost_lock.locked():
+        logger.info("Periodic menu update skipped: Repost lock is currently held.")
+        return
+
+    async with state.menu_repost_lock:
+        logger.info("Starting scheduled periodic menu update...")
+        try:
+            guild = bot.get_guild(bot_config.GUILD_ID)
+            if not guild: return # Added guild check
+            channel = guild.get_channel(bot_config.COMMAND_CHANNEL_ID)
+            if not channel:
+                logger.warning(f"Help menu channel with ID {bot_config.COMMAND_CHANNEL_ID} not found.")
+                return
+
+            # Clear the old message IDs before purging and re-posting
+            state.music_menu_message_id = None
+            state.times_report_message_id = None
+
+            await safe_purge(channel, limit=100)
+            await asyncio.sleep(1)
+
+            # --- New Order: !times, !music, !help ---
+
+            # 1. Post Times Report (Top) and store its ID
+            times_report_msg = await helper.show_times_report(channel)
+            if times_report_msg and hasattr(state, 'times_report_message_id'):
+                state.times_report_message_id = times_report_msg.id
+            await asyncio.sleep(1)
+
+            # 2. Post Music Menu (Middle) and store its ID
+            if state.music_enabled:
+                music_menu_msg = await helper.send_music_menu(channel)
+                if music_menu_msg and hasattr(state, 'music_menu_message_id'):
+                    state.music_menu_message_id = music_menu_msg.id
+                await asyncio.sleep(1)
+
+            # 3. Post Help Menu (Bottom)
+            if state.omegle_enabled:
+                await helper.send_help_menu(channel)
+
+            logger.info("Scheduled periodic menu update completed.")
+
+        except Exception as e:
+            logger.error(f"Periodic menu update task failed: {e}", exc_info=True)
+            # Lock is released automatically by 'async with'
 
 async def safe_purge(channel: Any, limit: int = 100) -> None:
     if not hasattr(channel, 'purge'):
-        logger.warning(f"Attempted to purge channel '{channel.name}' which is not a messageable channel.")
+        logger.warning(f"Attempted to purge channel '{getattr(channel, 'name', 'Unknown')}' which is not a messageable channel.")
         return
 
     two_weeks_ago = datetime.now(timezone.utc) - timedelta(days=14)
@@ -2266,12 +2412,11 @@ async def msearch(ctx, *, query: str):
                         # Add the tracks from the current page
                         tracks_to_search.extend(item['track'] for item in results['items'] if item['track'])
                         
-                        # --- FIX: Enforce a hard limit on playlist tracks ---
+                        # --- Enforce a hard limit on playlist tracks ---
                         if len(tracks_to_search) >= 50: # Limit set to 50
                             logger.warning(f"Spotify playlist processing limit (50) reached. Truncating list.")
                             tracks_to_search = tracks_to_search[:50]
                             results = None # Stop the loop
-                        # --- END FIX ---
                         elif results['next']:
                             # The sp.next() function is a helper that gets the next page of results
                             results = sp.next(results)
@@ -2335,7 +2480,7 @@ async def msearch(ctx, *, query: str):
                 was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
 
         response_msg = f"✅ Added **{added_count}** songs to the queue from the Spotify link."
-        # --- FIX: Notify user if playlist was truncated ---
+        # Notify user if playlist was truncated ---
         if '/playlist/' in clean_query and len(youtube_queries) == 50 and added_count <= 50:
              response_msg = f"✅ Added **{added_count}** songs from the first 50 tracks of the Spotify playlist."
         if skipped_count > 0:
@@ -2349,7 +2494,7 @@ async def msearch(ctx, *, query: str):
 
         return
 
-    # --- [MODIFIED BLOCK] YOUTUBE / DIRECT URL HANDLING ---
+    # YOUTUBE / DIRECT URL HANDLING ---
     elif is_generic_url:
         await status_msg.edit(content=f"⏳ Processing URL: `{clean_query}`...")
         try:
@@ -2379,7 +2524,6 @@ async def msearch(ctx, *, query: str):
 
         except Exception as e:
             logger.warning(f"Direct URL processing for '{clean_query}' failed with error: {e}. Falling back to text search.")
-    # --- [END MODIFIED BLOCK] ---
 
     if not all_hits:
         if not is_generic_url:
@@ -2473,10 +2617,8 @@ async def msearch(ctx, *, query: str):
             super().__init__(timeout=180.0)
             self.hits, self.author, self.query, self.is_Youtube, self.youtube_page = hits, author, query, is_Youtube, youtube_page
             self.current_page, self.page_size = 0, 23
-            # --- FIX: Corrected calculation ---
             self.total_pages = (len(self.hits) + self.page_size - 1) // self.page_size
             self.total_pages = max(1, self.total_pages) # Ensure at least 1 page
-            # --- END FIX ---
             self.message = None
             self.update_components()
 
@@ -2535,7 +2677,6 @@ async def msearch(ctx, *, query: str):
                                 if not entry or not entry.get('url'):
                                     continue
 
-                                # [FIX ADDED HERE] Filter unavailable videos
                                 title = entry.get('title', '').lower()
                                 if '[deleted video]' in title or '[private video]' in title:
                                     logger.info(f"Skipping unavailable video from YouTube 'Next Page': {entry.get('title')}")
@@ -2569,7 +2710,6 @@ async def msearch(ctx, *, query: str):
                                 if not entry or not entry.get('url'):
                                     continue
 
-                                # [FIX ADDED HERE] Filter unavailable videos
                                 title = entry.get('title', '').lower()
                                 if '[deleted video]' in title or '[private video]' in title:
                                     logger.info(f"Skipping unavailable video from 'Search YouTube' button: {entry.get('title')}")
@@ -2940,14 +3080,14 @@ async def mon(ctx):
     if state.music_enabled:
         await ctx.send("Music features are already enabled. Triggering a refresh of the command menus...", delete_after=10)
         logger.info("!mon run while already enabled. Triggering full menu refresh task.")
-        asyncio.create_task(periodic_menu_update())
+        asyncio.create_task(periodic_menu_update()) # Call periodic directly to ensure full clean refresh
         return
     logger.warning(f"Music features ENABLED by {ctx.author.name}")
     state.music_enabled = True
     await ctx.send("✅ Music features have been **ENABLED**. Connecting to voice and refreshing menus...")
     await start_music_playback()
     logger.info("!mon triggering full periodic_menu_update task.")
-    asyncio.create_task(periodic_menu_update())
+    asyncio.create_task(periodic_menu_update()) # Call periodic directly to ensure full clean refresh
     asyncio.create_task(save_state_async())
 
 
@@ -3335,6 +3475,113 @@ async def display_error(ctx, error: Exception) -> None:
         await ctx.send("Usage: `!display <@user or user_id>`")
     else:
         logger.error(f"Error in display command: {error}", exc_info=True)
+        await ctx.send("An unexpected error occurred.")
+
+
+@bot.command(name='move')
+@handle_errors
+async def move(ctx, member: discord.Member):
+    """Moves a user from the streaming VC to the punishment VC."""
+    author = ctx.author
+    is_allowed_user = author.id in bot_config.ALLOWED_USERS
+    
+    # Check if author is a discord.Member to check roles
+    is_move_role_user = False
+    if isinstance(author, discord.Member):
+        is_move_role_user = any(role.name in bot_config.MOVE_ROLE_NAME for role in author.roles)
+
+    # 1. Permission Check
+    if not is_allowed_user and not is_move_role_user:
+        await ctx.send("⛔ You do not have permission to use this command.", delete_after=10)
+        return
+
+    # 2. Specific Permission for MOVE_ROLE (if not an allowed_user)
+    if is_move_role_user and not is_allowed_user:
+        # Check 2a: Must be in command channel
+        if ctx.channel.id != bot_config.COMMAND_CHANNEL_ID:
+            await ctx.send(f"This command must be used in <#{bot_config.COMMAND_CHANNEL_ID}>.", delete_after=10)
+            return
+        
+        # Check 2b: Must be in streaming VC with camera on
+        if not is_user_in_streaming_vc_with_camera(author):
+            await ctx.send("You must be in the Streaming VC with your camera on to use this command.", delete_after=10)
+            return
+
+    # 3. Cooldown Check (only for non-ALLOWED_USERS)
+    if not is_allowed_user:
+        current_time = time.time()
+        cooldown_duration = 3600 # 1 hour
+        async with state.cooldown_lock: 
+            last_used = state.move_command_cooldowns.get(author.id, 0)
+            time_left = cooldown_duration - (current_time - last_used)
+            if time_left > 0:
+                await ctx.send(f"You can use this command again in {int(time_left // 60)} minutes.", delete_after=10)
+                return
+            # Note: Timestamp is updated *after* successful execution
+
+    # 4. Target Check & Action
+    streaming_vc = ctx.guild.get_channel(bot_config.STREAMING_VC_ID)
+    punishment_vc = ctx.guild.get_channel(bot_config.PUNISHMENT_VC_ID)
+
+    if not streaming_vc or not punishment_vc:
+        await ctx.send("❌ Error: Streaming or Punishment VC not configured correctly.", delete_after=10)
+        logger.error("!move command failed: STREAMING_VC_ID or PUNISHMENT_VC_ID is invalid.")
+        return
+
+    # --- This is the new check you requested ---
+    if member.id in bot_config.ALLOWED_USERS:
+        await ctx.send(f"⛔ You cannot move an Allowed User ({member.display_name}).", delete_after=10)
+        return
+    # --- End of new check ---
+
+    if not member.voice or member.voice.channel != streaming_vc:
+        await ctx.send(f"❌ {member.display_name} is not currently in the Streaming VC.", delete_after=10)
+        return
+        
+    # 5. Execute Move
+    try:
+        await member.move_to(punishment_vc, reason=f"Moved by {author.name} (Sleeping)")
+        logger.info(f"{author.name} moved {member.name} to Punishment VC.")
+    except discord.Forbidden:
+        await ctx.send(f"❌ I do not have permissions to move {member.name}.", delete_after=10)
+        return
+    except Exception as e:
+        await ctx.send(f"❌ An error occurred while moving {member.name}.", delete_after=10)
+        logger.error(f"Failed to execute !move: {e}", exc_info=True)
+        return
+
+    # 6. Update Cooldown (if applicable)
+    if not is_allowed_user:
+         async with state.cooldown_lock:
+             state.move_command_cooldowns[author.id] = time.time()
+
+    # 7. Record Stats
+    record_command_usage(state.analytics, "!move")
+    record_command_usage_by_user(state.analytics, author.id, "!move")
+
+    # 8. Send Notification using the helper function
+    await helper.send_punishment_vc_notification(
+        member=member,
+        reason="They are sleeping", # Hardcoded reason as requested
+        moderator_name=author.mention
+    )
+
+    # 9. Send a silent confirmation to the command user
+    try:
+        await ctx.message.add_reaction("✅")
+    except Exception:
+        pass # Not critical
+
+@move.error
+async def move_error(ctx, error: Exception) -> None:
+    if isinstance(error, commands.MemberNotFound):
+        await ctx.send(f"Could not find a member in this server with the input: `{error.argument}`")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Usage: `!move <@user or user_id>`")
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.send("⛔ You do not have permission to use this command.", delete_after=10)
+    else:
+        logger.error(f"Error in move command: {error}", exc_info=True)
         await ctx.send("An unexpected error occurred.")
 
 

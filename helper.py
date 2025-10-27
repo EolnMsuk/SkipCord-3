@@ -24,7 +24,7 @@ from tools import (
     handle_errors,
     format_duration,
 )
-# --- FIX: Import OmegleHandler ---
+# --- Import OmegleHandler ---
 from omegle import OmegleHandler
 
 def format_departure_time(duration: timedelta) -> str:
@@ -90,20 +90,72 @@ def create_message_chunks(
 
     return chunks
 
+
 async def _button_callback_handler(interaction: discord.Interaction, command: str, helper: 'BotHelper') -> None:
     """
     A generic handler for button presses, including permissions and cooldowns.
-    --- FIX: Now calls functions directly instead of invoking commands via fake messages. ---
+    Now checks if the user is disabled.
     """
     try:
         user_id = interaction.user.id
+        user_member = interaction.user # This is a discord.Member or discord.User
         bot_config = helper.bot_config
         state = helper.state
 
+        # --- ADD THIS BLOCK ---
+        # Check if user is disabled FIRST
+        async with state.moderation_lock:
+            if user_id in state.omegle_disabled_users:
+                # Use defer() then followup() for ephemeral message if already responded
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("You are currently disabled from using any commands.", ephemeral=True)
+                else:
+                    # If already deferred (e.g., from a previous check), use followup
+                    await interaction.followup.send("You are currently disabled from using any commands.", ephemeral=True)
+                logger.warning(f"Blocked disabled user {interaction.user.name} from using button command {command}.")
+                return # Stop processing if disabled
+        # --- END ADDED BLOCK ---
+
         # Permission Check (Channel)
         if user_id not in bot_config.ALLOWED_USERS and interaction.channel.id != bot_config.COMMAND_CHANNEL_ID:
-            await interaction.response.send_message(f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>", ephemeral=True)
+            # Use defer() then followup() if needed
+            if not interaction.response.is_done():
+                 await interaction.response.send_message(f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>", ephemeral=True)
+            else:
+                 await interaction.followup.send(f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>", ephemeral=True)
             return
+
+        # --- [NEW] VC AND CAMERA CHECK ---
+        # This check is skipped for ALLOWED_USERS
+        if user_id not in bot_config.ALLOWED_USERS:
+            # Define which button commands require the user to be in the VC with camera on
+            camera_required_commands = [
+                "!skip", "!refresh", "!report", "!rules", # Omegle buttons
+                "!mpauseplay", "!mskip", "!mshuffle", "!mclear" # Music buttons
+            ]
+
+            if command in camera_required_commands:
+                # We need the Member object to check voice state
+                is_in_vc_with_cam = False
+                
+                if isinstance(user_member, discord.Member): 
+                    streaming_vc = user_member.guild.get_channel(bot_config.STREAMING_VC_ID)
+                    is_in_vc_with_cam = bool(
+                        streaming_vc and
+                        user_member in streaming_vc.members and # Check if in the VC
+                        user_member.voice and # Check if in a voice state
+                        user_member.voice.self_video # Check if camera is on
+                    )
+
+                if not is_in_vc_with_cam:
+                    msg = "You must be in the Streaming VC with your camera on to use this button."
+                    # Use defer() then followup() if needed
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(msg, ephemeral=True)
+                    else:
+                        await interaction.followup.send(msg, ephemeral=True)
+                    return
+        # --- [END NEW CHECK] ---
 
         # Cooldown Check
         current_time = time.time()
@@ -113,34 +165,44 @@ async def _button_callback_handler(interaction: discord.Interaction, command: st
                 time_left = bot_config.COMMAND_COOLDOWN - (current_time - last_used)
                 if time_left > 0:
                     if not warned:
-                        await interaction.response.send_message(f"{interaction.user.mention}, wait {int(time_left)}s before using another button.", ephemeral=True)
-                        state.button_cooldowns[user_id] = (last_used, True)
+                         # Use defer() then followup() if needed
+                         if not interaction.response.is_done():
+                              await interaction.response.send_message(f"{interaction.user.mention}, wait {int(time_left)}s before using another button.", ephemeral=True)
+                         else:
+                              await interaction.followup.send(f"{interaction.user.mention}, wait {int(time_left)}s before using another button.", ephemeral=True)
+                         state.button_cooldowns[user_id] = (last_used, True)
                     else:
-                        try:
-                            await interaction.response.defer(ephemeral=True, thinking=False)
-                        except discord.InteractionResponded:
-                            pass
+                         # If already warned, just defer silently if not already done
+                         if not interaction.response.is_done():
+                              try:
+                                   await interaction.response.defer(ephemeral=True, thinking=False)
+                              except discord.InteractionResponded:
+                                   pass # Already responded, maybe by the disable check
                     return
             state.button_cooldowns[user_id] = (current_time, False)
 
-        # Defer first (ephemeral)
-        try:
-            await interaction.response.defer(ephemeral=True, thinking=False)
-        except discord.InteractionResponded:
-             logger.warning("Interaction already responded to before deferral in _button_callback_handler.")
-             pass
+        # Defer publicly before sending announcement and running command
+        # This prevents "Interaction failed" if command takes time
+        if not interaction.response.is_done():
+            try:
+                # We need to defer publicly here so the announcement can be sent
+                # We handle potential errors later with followup if needed
+                await interaction.response.defer(ephemeral=False, thinking=False)
+            except discord.InteractionResponded:
+                logger.warning("Interaction responded before public deferral in button handler.")
+                pass # Already responded somehow
 
-        # Send public announcement message
+        # Send public announcement message (now safe after defer)
         try:
-            announcement_content = f"**{interaction.user.display_name}** ({interaction.user.name}) used `{command}`"
-            await interaction.channel.send(announcement_content)
+            # Use the updated format
+            announcement_content = f"**{interaction.user.display_name}** used `{command}`"
+            await interaction.channel.send(announcement_content, delete_after=30.0)
             logger.info(f"Announced button use: {interaction.user.name} used {command}")
         except discord.Forbidden:
              logger.warning(f"Missing permissions to send announcement message in #{interaction.channel.name}")
         except Exception as e:
              logger.error(f"Failed to send button usage announcement: {e}")
 
-        # --- FIX: Directly call corresponding helper/handler methods ---
         try:
             # Create a simplified mock context usable by most commands
             mock_ctx = type('obj', (object,), {
@@ -158,24 +220,21 @@ async def _button_callback_handler(interaction: discord.Interaction, command: st
                 await helper.omegle_handler.refresh(mock_ctx) # Pass mock_ctx
             elif command == "!report":
                 await helper.omegle_handler.report_user(mock_ctx) # Pass mock_ctx
-            elif command == "!info":
-                await helper.show_info(mock_ctx)
+            elif command == "!rules":
+                await helper.show_rules(mock_ctx)
             elif command == "!mpauseplay":
                  cmd_obj = helper.bot.get_command("mpauseplay")
                  if cmd_obj:
-                     # --- FIX: Corrected call ---
                      await cmd_obj.callback(mock_ctx)
                  else: logger.error("Could not find !mpauseplay command object for button.")
             elif command == "!mskip":
                  cmd_obj = helper.bot.get_command("mskip")
                  if cmd_obj:
-                     # --- FIX: Corrected call ---
                      await cmd_obj.callback(mock_ctx)
                  else: logger.error("Could not find !mskip command object for button.")
             elif command == "!mshuffle":
                  cmd_obj = helper.bot.get_command("mshuffle")
                  if cmd_obj:
-                     # --- FIX: Corrected call ---
                      await cmd_obj.callback(mock_ctx)
                  else: logger.error("Could not find !mshuffle command object for button.")
             elif command == "!mclear":
@@ -191,7 +250,6 @@ async def _button_callback_handler(interaction: discord.Interaction, command: st
                 # Use followup since we deferred initially
                 await interaction.followup.send("An error occurred while running that action.", ephemeral=True)
             except Exception: pass
-        # --- END FIX ---
 
     except Exception as e:
         logger.error(f"Error in button callback: {e}", exc_info=True)
@@ -225,7 +283,7 @@ class HelpView(View):
         cmds = [
             ("⏸️", "👤", "!refresh", discord.ButtonStyle.danger),
             ("⏭️", "👤", "!skip", discord.ButtonStyle.success),
-            ("ℹ️", "👤", "!info", discord.ButtonStyle.primary),
+            ("ℹ️", "👤", "!rules", discord.ButtonStyle.primary),
             ("🚩", "👤", "!report", discord.ButtonStyle.secondary)
         ]
         for e, l, c, s in cmds:
@@ -374,7 +432,7 @@ class BotHelper:
     A class that encapsulates the logic for various bot commands and event notifications.
     This promotes modularity by separating command implementation from the event listeners in `bot.py`.
     """
-    def __init__(self, bot: commands.Bot, state: BotState, bot_config: BotConfig, save_func: Optional[Callable] = None, play_next_song_func: Optional[Callable] = None, omegle_handler: Optional[OmegleHandler] = None, update_menu_func: Optional[Callable] = None): # --- FIX: Added omegle_handler and update_menu_func ---
+    def __init__(self, bot: commands.Bot, state: BotState, bot_config: BotConfig, save_func: Optional[Callable] = None, play_next_song_func: Optional[Callable] = None, omegle_handler: Optional[OmegleHandler] = None, update_menu_func: Optional[Callable] = None):
         self.bot = bot
         self.state = state
         self.bot_config = bot_config
@@ -450,13 +508,11 @@ class BotHelper:
             embed.description = description
             embed.set_footer(text=f"{count} members left the server.")
 
-        # --- FIX: Added lock around notifications_enabled read ---
         async with self.state.moderation_lock:
             notifications_are_enabled = self.state.notifications_enabled
 
         if notifications_are_enabled: # <-- USE LOCAL VARIABLE
             await chat_channel.send(embed=embed)
-        # --- END FIX ---
 
         logger.info(f"Processed a batch of {count} member departures.")
 
@@ -596,7 +652,7 @@ class BotHelper:
 
         # Create the base embed
         embed = discord.Embed(
-            description=f"{member.mention} **was MOVED to the Punishment VC**",
+            description=f"{member.mention} **was MOVED to the No Cam VC**",
             color=discord.Color.dark_orange())
 
         embed.set_author(name=f"{member.name}", icon_url=member.display_avatar.url)
@@ -667,10 +723,9 @@ class BotHelper:
         """
         Sends a rich, formatted notification when a member's timeout is removed or expires.
         """
-        # --- FIX: Added lock around notifications_enabled read ---
+        # Added lock around notifications_enabled read ---
         async with self.state.moderation_lock:
             if not self.state.notifications_enabled: return
-        # --- END FIX ---
         chat_channel = member.guild.get_channel(self.bot_config.CHAT_CHANNEL_ID)
         if not chat_channel: return
 
@@ -707,10 +762,9 @@ class BotHelper:
     @handle_errors
     async def send_unban_notification(self, user: discord.User, moderator: discord.User) -> None:
         """Sends a notification when a user is unbanned."""
-        # --- FIX: Added lock around notifications_enabled read ---
+        # Added lock around notifications_enabled read ---
         async with self.state.moderation_lock:
             if not self.state.notifications_enabled: return
-        # --- END FIX ---
         chat_channel = self.bot.get_guild(self.bot_config.GUILD_ID).get_channel(self.bot_config.CHAT_CHANNEL_ID)
         if chat_channel:
             embed = discord.Embed(description=f"{user.mention} **UNBANNED**", color=discord.Color.green())
@@ -734,24 +788,55 @@ class BotHelper:
     @handle_errors
     async def handle_member_ban(self, guild: discord.Guild, user: discord.User) -> None:
         """
-        FIX: Handles the on_member_ban event. ONLY logs state, does NOT send messages.
+        Handles the on_member_ban event. ONLY logs state, does NOT send messages.
+        Now includes specific logging and error handling.
         """
-        if guild.id != self.bot_config.GUILD_ID: return
+        # --- ADD SPECIFIC LOGGING ---
+        logger.info(f"handle_member_ban starting for {user.name} ({user.id}) in guild {guild.id}")
+        # --- END ADD ---
+
+        if guild.id != self.bot_config.GUILD_ID:
+            logger.warning(f"handle_member_ban ignored ban in wrong guild ({guild.id})")
+            return
 
         reason, moderator_name = "No reason provided", "Unknown"
         try:
+            # --- ADD SPECIFIC LOGGING ---
+            logger.debug(f"Attempting to fetch audit log for ban of {user.name}")
+            # --- END ADD ---
             async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
+                # --- ADD SPECIFIC LOGGING ---
+                logger.debug(f"Audit log entry found: Target={entry.target}, User={entry.user}")
+                # --- END ADD ---
                 if entry.target and entry.target.id == user.id:
                     moderator_name = entry.user.name if entry.user else "Unknown"
                     reason = entry.reason or "No reason provided"
+                    # --- ADD SPECIFIC LOGGING ---
+                    logger.debug(f"Found matching audit log entry for {user.name}. Mod: {moderator_name}, Reason: {reason}")
+                    # --- END ADD ---
                     break
+        except discord.Forbidden: # --- ADD SPECIFIC EXCEPTION ---
+            logger.error("handle_member_ban failed: Missing permissions to view audit logs.")
+            # Still try to log the ban, just without mod/reason
         except Exception as e:
-            logger.error(f"Could not fetch audit log for ban: {e}")
+            logger.error(f"Could not fetch audit log for ban: {e}", exc_info=True)
+            # Still try to log the ban
 
-        async with self.state.moderation_lock:
-            self.state.recently_banned_ids.add(user.id)
-            self.state.recent_bans.append((user.id, user.name, getattr(user, 'display_name', user.name), datetime.now(timezone.utc), reason))
-            logger.info(f"Logged ban for {user.name}. Reason: {reason}. Moderator: {moderator_name}.")
+        # --- ADD TRY/EXCEPT AROUND STATE UPDATE ---
+        try:
+            async with self.state.moderation_lock:
+                self.state.recently_banned_ids.add(user.id)
+                self.state.recent_bans.append((user.id, user.name, getattr(user, 'display_name', user.name), datetime.now(timezone.utc), reason))
+                logger.info(f"Successfully logged ban state for {user.name}. Reason: {reason}. Moderator: {moderator_name}.")
+                # --- [RACE CONDITION FIX] ---
+                if self.save_state:
+                     # Save state immediately after logging ban ID to prevent race condition with on_member_remove
+                     asyncio.create_task(self.save_state())
+                     logger.debug("Triggered state save after adding ban ID to fix race condition.")
+                # --- END [RACE CONDITION FIX] ---
+        except Exception as state_e:
+            logger.critical(f"CRITICAL: Failed to update state in handle_member_ban for {user.name}: {state_e}", exc_info=True)
+        # --- END TRY/EXCEPT ---
 
     @handle_errors
     async def handle_member_unban(self, guild: discord.Guild, user: discord.User) -> None:
@@ -769,26 +854,32 @@ class BotHelper:
     @handle_errors
     async def handle_member_remove(self, member: discord.Member) -> None:
         """
-        FIX: Handles member departure deterministically: checks ban, then kick, then processes as leave.
+        Handles member departure deterministically: checks ban, then kick, then processes as leave.
         This is now the SOLE function responsible for sending departure notifications (ban/kick/leave).
         """
         if member.guild.id != self.bot_config.GUILD_ID: return
+
+        # --- [RACE CONDITION FIX] ---
+        # Wait a few seconds to let the on_member_ban event fire and SAVE its state first.
+        # This prevents the bot from seeing the member remove before it sees the ban.
+        await asyncio.sleep(4) 
+        # --- END [RACE CONDITION FIX] ---
 
         guild = member.guild
         chat_channel = guild.get_channel(self.bot_config.CHAT_CHANNEL_ID)
         if not chat_channel: return
 
-        # --- FIX: Deterministic Ban Check ---
+        # Deterministic Ban Check ---
         async with self.state.moderation_lock:
             if member.id in self.state.recently_banned_ids:
                 # Ban already logged by on_member_ban. Send the notification here.
                 ban_entry = next((b for b in reversed(self.state.recent_bans) if b[0] == member.id), None)
                 reason = ban_entry[4] if ban_entry else "No reason provided"
-                # We don't easily know the moderator object here, so use the name stored
+                
                 mod_name = "Unknown" # Placeholder if lookup fails
                 try:
                     # Look slightly further back in audit log just in case
-                    async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.ban, after=datetime.now(timezone.utc) - timedelta(minutes=1)):
+                    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban, after=datetime.now(timezone.utc) - timedelta(minutes=1)):
                          if entry.target and entry.target.id == member.id:
                              mod_name = entry.user.mention if entry.user else "Unknown"
                              break
@@ -800,25 +891,24 @@ class BotHelper:
                 self.state.recently_banned_ids.remove(member.id) # Clean up
                 logger.info(f"Processed departure for {member.name} as BAN.")
                 return # Ban handled.
-        # --- END FIX ---
 
-        # --- FIX: Deterministic Kick Check ---
+
+        # Deterministic Kick Check ---
         try:
             # Check audit log shortly *after* the remove event timestamp
             async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.kick, after=member.joined_at or (datetime.now(timezone.utc) - timedelta(minutes=5))): # Check recent kicks
                 # Check within a small window around the remove time
                 time_difference = abs((entry.created_at - datetime.now(timezone.utc)).total_seconds())
-                if entry.target and entry.target.id == member.id and time_difference < 10: # Check if kick happened within 10s of now
+                if entry.target and entry.target.id == member.id and time_difference < 15: # Increased window to 15s
                     reason = entry.reason or "No reason provided"
                     embed = await self._create_departure_embed(member, entry.user, reason, "KICKED", discord.Color.orange())
                     
-                    # --- FIX: Added lock around notifications_enabled read ---
+                    # Added lock around notifications_enabled read ---
                     async with self.state.moderation_lock:
                         notifications_are_enabled = self.state.notifications_enabled
 
                     if notifications_are_enabled: # <-- USE LOCAL VARIABLE
                         await chat_channel.send(embed=embed)
-                    # --- END FIX ---
 
                     logger.info(f"Processed departure for {member.name} as KICK.")
                     async with self.state.moderation_lock:
@@ -829,7 +919,6 @@ class BotHelper:
             logger.warning("Missing permissions to check audit log for kicks.")
         except Exception as e:
             logger.error(f"Error checking audit log for kick: {e}")
-        # --- END FIX ---
 
         # --- Process as Leave (Buffering logic remains) ---
         logger.info(f"Buffering LEAVE for {member.name}.")
@@ -861,16 +950,15 @@ class BotHelper:
             help_description = """
 **Pause** --------- Pause Omegle
 **Skip** ----------- Skip/Start Omegle
-**Info** ----------- Shows Server Info
+**Rules** ---------- Shows Server Rules
 **Report** -------- Report Omegle User
 **!commands** --- List All Commands
 """
             embed = discord.Embed(title="👤  Omegle Controls  👤", description=help_description, color=discord.Color.blue())
             destination = target.channel if hasattr(target, 'channel') else target
             if destination and hasattr(destination, 'send'):
-                # --- FIX: Pass self (the helper instance) to the View ---
                 await destination.send(embed=embed, view=HelpView(self))
-                # --- END FIX ---
+
         except Exception as e:
             logger.error(f"Error in send_help_menu: {e}", exc_info=True)
 
@@ -1075,7 +1163,8 @@ class BotHelper:
             "`!timeouts` - Shows currently timed-out users.\n"
             "`!rtimeouts` - Removes all active timeouts from users.\n"
             "`!display <user>` - Shows a detailed profile for a user.\n"
-            "`!role <@role>` - Lists all members in a specific role.\n" # <-- Added !role
+            "`!role <@role>` - Lists all members in a specific role.\n" 
+            "`!move <@user>` - Moves a user from Streaming to Punishment VC.\n" # <-- ADDED !move
             "`!commands` - Shows this list of all commands."
         )
 
@@ -1219,9 +1308,7 @@ class BotHelper:
             def process_kick(entry):
                 uid, name, dname, ts, reason, mod, _ = entry
                 user_info = get_user_display_info(uid, name, dname)
-                # --- FIX: Use mod mention string directly ---
                 line = f"• {user_info} - by {mod}"
-                # --- END FIX ---
                 if reason and reason != "No reason provided":
                     line += f" for *{reason}*"
                 line += f" <t:{int(ts.timestamp())}:R>"
@@ -1608,7 +1695,7 @@ class BotHelper:
 
         has_any_stats_data = False
 
-        # --- FIX: Each stats block is now self-contained ---
+        # Each stats block is now self-contained ---
 
         # Overall Command Usage
         async with self.state.analytics_lock:
@@ -1862,9 +1949,8 @@ class BotHelper:
 *{" | ".join(status_lines)}*
 """
             embed = discord.Embed(title="🎵  Music Controls 🎵", description=description, color=discord.Color.purple())
-            # --- FIX: Pass self (the helper instance) to the View ---
+            # Pass self (the helper instance) to the View ---
             view = MusicView(self)
-            # --- END FIX ---
             return embed, view
 
         except Exception as e:

@@ -133,7 +133,6 @@ class OmegleHandler:
         It checks if the command has already been sent and updates the state on success.
         Returns True on success, False on failure.
         """
-        # --- FIX: Added lock ---
         async with self.state.moderation_lock:
             if not self.state or self.state.relay_command_sent:
                 return True  # Already sent or state unavailable, so it's "successful".
@@ -172,7 +171,6 @@ class OmegleHandler:
 
             logger.warning("Failed to send /relay command. Will retry on next skip.")
             return False
-        # --- END FIX ---
 
 
     def __init__(self, bot: commands.Bot, bot_config: BotConfig):
@@ -511,14 +509,12 @@ class OmegleHandler:
             
             # On successful refresh, arm the /relay command for the next skip.
             if self.state:
-                # --- FIX: Need lock to modify state safely ---
                 async with self.state.moderation_lock:
                     self.state.relay_command_sent = False
-                # --- END FIX ---
                 logger.info("Relay command armed to be sent on the next skip after refresh.")
 
             logger.info("Selenium: Page refreshed successfully.")
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(5.3)
             await self.find_and_click_checkbox()
             return True
         except Exception as e:
@@ -634,7 +630,6 @@ class OmegleHandler:
             # Run the blocking screenshot call in a separate thread.
             screenshot_bytes = await asyncio.to_thread(capture_jpeg_bytes)
             
-            # --- FIX: Use dedicated screenshot_lock ---
             async with self.state.screenshot_lock:
                 if not hasattr(self.state, 'ban_screenshots'):
                      self.state.ban_screenshots = []
@@ -642,7 +637,6 @@ class OmegleHandler:
                 # Keep the list trimmed to the last 3 screenshots.
                 if len(self.state.ban_screenshots) > 3:
                     self.state.ban_screenshots.pop(0)
-            # --- END FIX ---
             
         except Exception as e:
             logger.error(f"Failed to capture and store screenshot for ban buffer: {e}")
@@ -660,15 +654,21 @@ class OmegleHandler:
             current_url = await asyncio.to_thread(lambda: self.driver.current_url)
 
             # --- BAN DETECTION ---
-            # --- FIX: Added lock ---
             async with self.state.moderation_lock:
                 if "/ban/" in current_url and not self.state.is_banned:
                     logger.warning(f"Proactive ban check detected a ban! URL: {current_url}.")
 
-                    # --- [NEW] Log users in streaming VC to ban.log ---
+                    guild = self.bot.get_guild(self.config.GUILD_ID)
+                    streaming_vc = None
+                    human_members = []
+                    if guild:
+                        streaming_vc = guild.get_channel(self.config.STREAMING_VC_ID)
+                        if streaming_vc:
+                            members_in_vc = streaming_vc.members
+                            human_members = [m for m in members_in_vc if not m.bot]
+
                     try:
-                        guild = self.bot.get_guild(self.config.GUILD_ID)
-                        if guild:
+                        if guild and streaming_vc:
                             streaming_vc = guild.get_channel(self.config.STREAMING_VC_ID)
                             members_in_vc = streaming_vc.members if streaming_vc else []
                             
@@ -692,9 +692,7 @@ class OmegleHandler:
                     except Exception as ban_log_e:
                         # Log to the main bot.log if the ban.log fails for any reason
                         logger.error(f"Failed to write to ban.log: {ban_log_e}", exc_info=True)
-                    # --- End [NEW] ---
 
-                    # --- [MODIFIED] Save and post buffered screenshots ---
                     if self.config.SS_LOCATION and hasattr(self.state, 'ban_screenshots'):
                         saved_filepaths = []
                         try:
@@ -710,7 +708,6 @@ class OmegleHandler:
                                 # [REMOVED] Block to get VC usernames to prevent long filenames.
 
                                 for i, (capture_time, ss_bytes) in enumerate(screenshots_to_save):
-                                    # [MODIFIED] Simplified filename
                                     filename = f"ban-{ban_timestamp}-{i + 1}.jpg"
                                     filepath = os.path.join(self.config.SS_LOCATION, filename)
                                     
@@ -723,16 +720,31 @@ class OmegleHandler:
                                         logger.error(f"Failed to write pre-ban screenshot {filename}: {write_e}")
                                 
                                 logger.info(f"Successfully saved {len(screenshots_to_save)} pre-ban screenshots.")
-
                                 # --- [NEW] Post screenshots to channel ---
                                 stats_channel_id = self.config.AUTO_STATS_CHAN or self.config.CHAT_CHANNEL_ID
                                 stats_channel = self.bot.get_channel(stats_channel_id)
                                 if stats_channel and saved_filepaths:
                                     try:
-                                        await stats_channel.send("@here The screenshots below were taken before the most recent ban:")
+                                        # --- MODIFICATION: Build new message and remove auto-delete from text message ---
+                                        vc_mention = streaming_vc.mention if streaming_vc else f"<#{self.config.STREAMING_VC_ID}>"
+                                        user_mentions = " ".join([m.mention for m in human_members]) if human_members else "No users were in the VC."
+
+                                        announcement_msg = (
+                                            f"@here The {vc_mention} VC was just banned on Omegle, "
+                                            f"the screenshots attached were taken before the ban:\n"
+                                            f"{user_mentions}"
+                                        )
+                                        
+                                        # Send announcement without delete_after
+                                        await stats_channel.send(announcement_msg)
+                                        
                                         files_to_send = [discord.File(fp) for fp in saved_filepaths]
-                                        await stats_channel.send(files=files_to_send)
-                                        logger.info(f"Posted {len(saved_filepaths)} pre-ban screenshots to channel ID {stats_channel_id}.")
+                                        
+                                        # Send files, delete after 2 minutes (120 seconds)
+                                        await stats_channel.send(files=files_to_send, delete_after=120.0)
+                                        
+                                        logger.info(f"Posted {len(saved_filepaths)} pre-ban screenshots to channel ID {stats_channel_id} (auto-delete 2m).")
+                                        # --- END MODIFICATION ---
                                     except discord.Forbidden:
                                         logger.error(f"Missing permissions to post pre-ban screenshots in channel ID {stats_channel_id}.")
                                     except Exception as post_e:
@@ -744,7 +756,6 @@ class OmegleHandler:
                                 logger.warning("Ban detected, but screenshot buffer was empty.")
                         except Exception as ss_e:
                             logger.error(f"An error occurred while saving/posting pre-ban screenshots: {ss_e}")
-                    # --- End [MODIFIED] ---
 
                     self.state.is_banned = True # Set state *inside the lock*
                     try:
@@ -760,10 +771,8 @@ class OmegleHandler:
                             logger.info(f"Sent ban notification (ID: {ban_msg.id}) to channel ID {self.config.CHAT_CHANNEL_ID}.")
                     except Exception as e:
                         logger.error(f"Failed to send ban notification: {e}")
-            # --- END FIX ---
 
             # --- UNBAN DETECTION ---
-            # --- FIX: Added lock ---
             async with self.state.moderation_lock:
                 # If we see the main video URL and our state is currently banned, we've just been unbanned.
                 if self.config.OMEGLE_VIDEO_URL in current_url and self.state.is_banned:
@@ -794,7 +803,6 @@ class OmegleHandler:
 
                     except Exception as e:
                         logger.error(f"Failed to send proactive unbanned notification: {e}")
-            # --- END FIX ---
 
         except UnexpectedAlertPresentException:
             try:
