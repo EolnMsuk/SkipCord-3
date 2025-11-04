@@ -169,17 +169,18 @@ MUSIC_SUPPORTED_FORMATS = ('.mp3', '.flac', '.wav', '.ogg', '.m4a')
 # Configure global hotkeys on the host machine to trigger music commands.
 
 ENABLE_GLOBAL_MSKIP = False             # Set to True to enable the !mskip hotkey, False to disable it.
-GLOBAL_HOTKEY_MSKIP = "end"             # The key to trigger the !mskip. Uses the `keyboard` library format.
+GLOBAL_HOTKEY_MSKIP = ""             # The key to trigger the !mskip. Uses the `keyboard` library format.
 
 ENABLE_GLOBAL_MPAUSE = False            # Set to True to enable the !mpause hotkey, False to disable it.
-GLOBAL_HOTKEY_MPAUSE = "page down"      # The key to trigger the !mpause. Uses the `keyboard` library format.
+GLOBAL_HOTKEY_MPAUSE = ""      # The key to trigger the !mpause. Uses the `keyboard` library format.
 
 ENABLE_GLOBAL_MVOLDOWN = False          # Set to True to enable the !mvoldown hotkey, False to disable it.
-GLOBAL_HOTKEY_MVOLDOWN = "["            # The key to trigger the !mvoldown. Uses the `keyboard` library format.
+GLOBAL_HOTKEY_MVOLDOWN = ""            # The key to trigger the !mvoldown. Uses the `keyboard` library format.
 
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
-GLOBAL_HOTKEY_MVOLUP = "]"              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+GLOBAL_HOTKEY_MVOLUP = ""              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
