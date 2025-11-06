@@ -25,7 +25,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **`!move` Command**: Admins or designated roles can move users from the Streaming VC to the Punishment VC (e.g., for sleeping), with automatic notifications and cooldowns for non-owners.
 * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the recent screenshots locally, **posts them to a Discord channel** (configurable, auto-deleted after 2 minutes), and logs details (including users present in the streaming VC) to a dedicated `ban.log` file.
 * **Clean Command Channel**: Automatically deletes old command messages (after ~1 min) to keep the control channel tidy, while preserving the interactive menus.
-* **Daily Auto-Stats**: Posts a voice channel time report (`!times`) daily at a configured UTC time, then automatically clears VC time, command usage, and violation statistics for the next day.
+* **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time, command usage, and violation statistics for the next day.
 * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
 * **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression. Status messages and critical errors (like **VC connection failures**) can be sent to a dedicated Discord log channel (configurable via `LOG_GC`).
 
