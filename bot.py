@@ -1,3 +1,5 @@
+# bot.py
+
 import asyncio
 import json
 import os
@@ -453,6 +455,7 @@ async def scan_and_shuffle_music() -> int:
     except Exception as e:
         logger.error(f'Failed to save persistent metadata cache: {e}')
     return len(state.shuffle_queue)
+
 async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None):
     async with state.music_lock:
         state.is_processing_song = True
@@ -477,56 +480,102 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None):
         async with state.music_lock:
             volume = state.music_volume
         logger.debug(f'Attempting to process song: {song_info}')
+        
+        # --- NEW LOGIC TO RESOLVE YOUTUBE URLS ---
+        stream_url_to_play = song_path_or_url # Default to original path
+        if is_stream and ('youtube.com' in song_path_or_url or 'youtu.be' in song_path_or_url):
+            logger.debug(f"YouTube stream detected. Resolving direct URL with yt-dlp...")
+            try:
+                # Use a modified YDL_OPTIONS for playback (not playlist, get best audio)
+                YDL_PLAYBACK_OPTIONS = YDL_OPTIONS.copy()
+                YDL_PLAYBACK_OPTIONS['extract_flat'] = False # We need the full info, not flat
+                YDL_PLAYBACK_OPTIONS['yes_playlist'] = False # Don't extract playlist, just the one video
+                YDL_PLAYBACK_OPTIONS['default_search'] = 'auto'
+                YDL_PLAYBACK_OPTIONS['format'] = 'bestaudio[ext=m4a]/bestaudio/best' # Get best audio format
+
+                with yt_dlp.YoutubeDL(YDL_PLAYBACK_OPTIONS) as ydl:
+                    info = await asyncio.to_thread(ydl.extract_info, song_path_or_url, download=False)
+                    
+                    if info and 'url' in info:
+                        stream_url_to_play = info['url'] # This is the direct audio stream URL
+                        song_display_name = info.get('title', song_display_name) # Update title from resolved info
+                        logger.debug(f"Successfully resolved direct stream URL.")
+                        # Update the title in the bot's state
+                        async with state.music_lock:
+                             if state.current_song:
+                                state.current_song['title'] = song_display_name
+                    else:
+                        logger.warning(f"yt-dlp did not return a 'url' for {song_path_or_url}")
+                        raise ValueError("yt-dlp failed to extract stream URL")
+            except Exception as ydl_e:
+                logger.error(f"Failed to resolve YouTube stream URL with yt-dlp: {ydl_e}", exc_info=True)
+                if ctx:
+                    await ctx.send(f"❌ **Playback Error:** Could not resolve stream for `{song_display_name}`. Skipping.", delete_after=15)
+                # Manually trigger the next song
+                async with state.music_lock:
+                    state.is_music_playing = False
+                    state.is_processing_song = False
+                asyncio.create_task(update_music_menu())
+                await asyncio.sleep(2.0)
+                asyncio.create_task(play_next_song()) # Skip to next song
+                return # Stop executing this function
+        # --- END OF NEW LOGIC ---
+
         before_options = '-reconnect 1 -reconnect_delay_max 5'
         ffmpeg_options = {'options': '-vn -loglevel error -nostdin'}
         if is_stream:
             logger.info(f'Processing as a stream: {song_display_name}')
             ffmpeg_options['before_options'] = before_options
             try:
-                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, **ffmpeg_options), volume=volume)
-                if hasattr(source, 'title') and source.title:
-                    song_display_name = source.title
-                    async with state.music_lock:
-                        if state.current_song:
-                            state.current_song['title'] = song_display_name
+                # *** MODIFIED: Use the (potentially new) stream_url_to_play ***
+                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(stream_url_to_play, **ffmpeg_options), volume=volume)
+                # We already set the title from yt-dlp, so no need to update it here
             except Exception as e:
-                logger.error(f'Failed to create stream audio source for {song_path_or_url}: {e}', exc_info=True)
+                logger.error(f'Failed to create stream audio source for {stream_url_to_play}: {e}', exc_info=True)
                 try:
                     logger.warning('Retrying stream without any before_options...')
                     fallback_ffmpeg_options = {'options': '-vn -loglevel error -nostdin'}
-                    source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, **fallback_ffmpeg_options), volume=volume)
-                    if hasattr(source, 'title') and source.title:
-                        song_display_name = source.title
+                    # *** MODIFIED: Use the (potentially new) stream_url_to_play ***
+                    source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(stream_url_to_play, **fallback_ffmpeg_options), volume=volume)
                 except Exception as fallback_e:
                     logger.critical(f'Fallback stream creation also failed: {fallback_e}')
                     raise ValueError('discord.FFmpegPCMAudio failed.')
         else:
-            logger.info(f"Processing as a local file: '{os.path.basename(song_path_or_url)}'.")
+            logger.info(f"Processing as a local file: '{os.path.basename(stream_url_to_play)}'.")
             if state.config.NORMALIZE_LOCAL_MUSIC:
                 logger.debug('Normalizing local file audio.')
-                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, **FFMPEG_OPTIONS_LOUDNORM), volume=volume)
+                # *** MODIFIED: Use stream_url_to_play (which is just song_path_or_url here) ***
+                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(stream_url_to_play, **FFMPEG_OPTIONS_LOUDNORM), volume=volume)
             else:
                 logger.debug('Playing local file without normalization.')
-                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, options='-vn -loglevel error'), volume=volume)
+                # *** MODIFIED: Use stream_url_to_play (which is just song_path_or_url here) ***
+                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(stream_url_to_play, options='-vn -loglevel error'), volume=volume)
+        
         if not source:
             raise ValueError('Audio source creation failed.')
+        
         logger.debug('Audio source created successfully. Attempting to play.')
         await asyncio.sleep(0.5)
         bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(after_playback_handler(e), bot.loop))
         async with state.music_lock:
             state.is_processing_song = False
+        
         logger.info(f'Now playing: {song_display_name}')
         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=song_display_name))
+        
         announcement_ctx = None
         async with state.music_lock:
             if state.announcement_context:
                 announcement_ctx = state.announcement_context
                 state.announcement_context = None
+        
         if announcement_ctx:
             await announcement_ctx.send(f'🎵 Now Playing: **{song_display_name}**')
         elif bot_config.MUSIC_DEFAULT_ANNOUNCE_SONGS and ctx:
             await ctx.send(f'🎵 Now Playing: **{song_display_name}**')
+        
         asyncio.create_task(update_music_menu())
+
     except Exception as e:
         logger.critical('CRITICAL FAILURE IN _play_song.', exc_info=True)
         logger.error(f'--> Failed Song Info: {song_info}')
@@ -538,6 +587,7 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None):
         asyncio.create_task(update_music_menu())
         await asyncio.sleep(2.0)
         asyncio.create_task(play_next_song())
+
 async def after_playback_handler(error=None):
     if error:
         logger.error(f'FFmpeg process finished with an error object: {error}', exc_info=error)
@@ -950,6 +1000,8 @@ async def manage_music_presence():
     is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
     if is_bot_connected and (not human_listeners_with_cam):
         logger.info('No active users with cameras detected. Attempting to disconnect music bot.')
+        async with state.music_lock:
+            state.stop_after_clear = True
         try:
             await bot.voice_client_music.disconnect(force=True)
             logger.info('Successfully disconnected music bot.')

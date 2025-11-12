@@ -5,7 +5,7 @@ import os
 import re
 import base64
 import time
-import random  # <-- ADD THIS IMPORT
+import random
 from datetime import datetime, timezone
 from functools import wraps
 from typing import Optional, Union, List, Tuple
@@ -507,7 +507,6 @@ class OmegleHandler:
                     try:
                         await asyncio.sleep(5.3)
                         
-                        # --- MODIFIED BLOCK ---
                         clicked_a_checkbox = False # Default
                         # Click checkboxes if present AND enabled in config
                         if self.config.CLICK_CHECKBOX:
@@ -590,7 +589,6 @@ class OmegleHandler:
                                 )
                                 if i < len(keys) - 1:
                                     await asyncio.sleep(1)
-                        # --- END MODIFIED BLOCK ---
 
                         # Refresh the page to "pause" it
                         logger.info(
@@ -743,7 +741,6 @@ class OmegleHandler:
                     try:
                         if not checkbox.is_selected():
 
-                            # --- MODIFIED BLOCK START ---
                             # If we've already clicked one, pause randomly before the next
                             if clicked_any:
                                 between_click_pause = random.uniform(0.4, 0.9)
@@ -773,7 +770,6 @@ class OmegleHandler:
                             actions.pause(human_hover_pause) # <-- USE RANDOM PAUSE
                             actions.click() # <-- Click at current (offset) mouse position
                             actions.perform() # Execute the chain
-                            # --- MODIFIED BLOCK END ---
 
                             clicked_any = True
                         else:
@@ -919,7 +915,6 @@ class OmegleHandler:
                 )
             logger.info("Selenium: Page refreshed successfully.")
 
-            # --- START: Modified Block ---
             # Check if the checkbox click feature is enabled and if this was a user refresh
             if ctx is not None and self.config.CLICK_CHECKBOX:
                 logger.info(
@@ -944,7 +939,6 @@ class OmegleHandler:
                 logger.info(
                     "Automated refresh (e.g., auto-pause). Skipping checkbox click."
                 )
-            # --- END: Modified Block ---
 
             return True
         except Exception as e:
@@ -991,7 +985,9 @@ class OmegleHandler:
                             "Page.captureScreenshot",
                             {"format": "jpeg", "quality": SCREENSHOT_JPEG_QUALITY},
                         )
+                        # <<< START: FIX >>>
                         img_bytes = base64.b64decode(screenshot_data["data"])
+                        # <<< END: FIX >>>
                         with open(filepath, "wb") as f:
                             f.write(img_bytes)
                         return True
@@ -1074,7 +1070,9 @@ class OmegleHandler:
                     "Page.captureScreenshot",
                     {"format": "jpeg", "quality": SCREENSHOT_JPEG_QUALITY},
                 )
+                # <<< START: FIX >>>
                 return base64.b64decode(screenshot_data["data"])
+                # <<< END: FIX >>>
 
             screenshot_bytes = await asyncio.to_thread(capture_jpeg_bytes)
 
@@ -1089,7 +1087,8 @@ class OmegleHandler:
 
         except Exception as e:
             logger.error(
-                f"Failed to capture and store screenshot for ban buffer: {e}"
+                f"Failed to capture and store screenshot for ban buffer: {e}",
+                exc_info=True
             )
 
     async def check_for_ban(self) -> None:
@@ -1246,6 +1245,7 @@ class OmegleHandler:
 
                     # --- Update State and Notify Channel ---
                     self.state.is_banned = True
+                    # VC status update on ban removed by user request.
                     try:
                         chat_channel = self.bot.get_channel(
                             self.config.CHAT_CHANNEL_ID
@@ -1302,6 +1302,7 @@ class OmegleHandler:
 
                             # Reset state
                             self.state.is_banned = False
+                            # VC status update on unban removed by user request.
                             self.state.relay_command_sent = False
                             was_unbanned = True
                             logger.info(
@@ -1337,4 +1338,4 @@ class OmegleHandler:
                     f"Tried to handle an unexpected alert, but failed: {alert_e}"
                 )
         except Exception as e:
-            logger.error(f"Error during passive ban check: {e}")
+            logger.error(f"Error during passive ban check: {e}", exc_info=True)
