@@ -17,7 +17,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Auto-Pause**: Intelligently triggers a browser page refresh (`!refresh` / pause command) *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth. The bot also automatically handles common elements like terms checkboxes after a refresh.
 * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
 
-<img width="467" height="912" alt="skipcord" src="https://github.com/user-attachments/assets/6443c7ca-57fb-478d-bc7e-335708fd30f2" />
+<img width="467" height="912" alt="skipcord" src="https://github.com/user-attachments/assets/9ccbcdb9-791a-4ca2-92a6-158735dc3255" />
 
 ### 🛡️ Advanced Moderation & Automation
 
