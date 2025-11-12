@@ -17,7 +17,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Auto-Pause**: Intelligently triggers a browser page refresh (`!refresh` / pause command) *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth. The bot also automatically handles common elements like terms checkboxes after a refresh.
 * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
 
-<img width="313" height="206" alt="omegle" src="https://github.com/user-attachments/assets/68a06e26-51a0-4943-8815-e66fa24973af" />
+<img width="467" height="912" alt="skipcord" src="https://github.com/user-attachments/assets/6443c7ca-57fb-478d-bc7e-335708fd30f2" />
 
 ### 🛡️ Advanced Moderation & Automation
 
@@ -29,7 +29,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
 * **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression. Status messages and critical errors (like **VC connection failures**) can be sent to a dedicated Discord log channel (configurable via `LOG_GC`).
 
-<img width="1271" height="538" alt="2" src="https://github.com/user-attachments/assets/3c6de1af-c9a7-4474-a498-dbeaf4af19de" />
+<img width="1298" height="962" alt="console" src="https://github.com/user-attachments/assets/c3eb321b-88fe-4344-b33a-513fc47b5202" />
 
 ### 🎵 Integrated Music System
 
@@ -40,14 +40,10 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Automatic Management**: The bot joins the VC when users with cameras are present and leaves when it's empty to conserve resources. Includes a watchdog task to ensure playback resumes if it unexpectedly stops.
 * **Dynamic Menu**: The interactive music control menu updates in real-time to show the current song, playback status, volume, mode, and queue length.
 
-<img width="420" height="282" alt="3" src="https://github.com/user-attachments/assets/e54fe401-1d86-4d06-8772-b966b38b3b75" />
-
 ### 📊 Persistent State & Analytics
 
 * **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, window geometry, moderation settings, and menu message IDs—is saved to `data.json` and reloaded on startup, ensuring no data is lost after a crash or restart.
 * **VC Time Tracking**: Tracks the cumulative time users spend in moderated voice channels, with daily leaderboards available via the `!times` command (also shown in the command channel menu).
-
-<img width="376" height="322" alt="4" src="https://github.com/user-attachments/assets/f214d515-b9a3-4995-b2a1-bfbaf204e3b0" />
 
 ### 🔔 Comprehensive Event Notifications
 
