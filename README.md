@@ -277,5 +277,5 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down (-5%)
 
 ### Donations
 
-  * **CashApp:** `$eolnmsuk`
+  * **CashApp:** `cash.app/$eolnmsuk`
   * **Bitcoin:** `bc1qm06lzkdfule3f7flf4u70xvjrp5n74lzxnnfks`
