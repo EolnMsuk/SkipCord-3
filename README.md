@@ -128,6 +128,9 @@ The bot keeps administrators informed with a robust, event-driven notification s
 * **Microsoft Edge**: Ensure the Edge browser is installed and up-to-date.
 * **Python 3.9+**: Install from [python.org](https://www.python.org/downloads/). Make sure to check **"Add Python to PATH"** during installation.
 * **FFmpeg**: Required for music playback. Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to your system's PATH.
++ **Deno**: Required by the `yt-dlp` music dependency.
++   1.  Install Deno from [deno.land/install](https://deno.land/install).
++   2.  Ensure the Deno executable is added to your system's `PATH`. The installers usually handle this automatically.
 * **Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
 
 ```
@@ -266,10 +269,14 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down (-5%)
   * **Edge Won't Launch / `user data directory is already in use`**: Double-check that **all** Edge browser windows and background processes are completely closed before starting the bot. Verify the `EDGE_USER_DATA_DIR` path in `config.py` is absolutely correct (use forward slashes `/` even on Windows) and points to the *parent* directory of `Default` or `Profile X`.
   * **"WebDriver" Error / Version Mismatch**: Make sure your Edge browser is fully updated (`edge://settings/help`). Selenium usually downloads the correct driver automatically. If you get persistent errors mentioning version mismatches, you can manually download the correct `msedgedriver.exe` for your specific Edge version from the [Microsoft Edge WebDriver page](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/) and specify its full path (including `msedgedriver.exe`) in `config.py` via the `EDGE_DRIVER_PATH` setting.
   * **Music Doesn't Play / "FFmpeg not found"**: Confirm that **FFmpeg** is installed correctly and that the folder containing `ffmpeg.exe` is added to your system's `PATH` environment variable. You might need to restart your terminal or PC after updating the PATH. Check `bot.log` for specific FFmpeg errors during playback attempts.
-  * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct, copied directly from the Spotify Developer Dashboard, and have no extra spaces.
-  * **VC Connection Errors in `LOG_GC`**: If you see messages about failing to connect, check the bot's permissions in Discord. Ensure it has the "Connect" and "Speak" permissions for the `STREAMING_VC_ID`.
-  * **Buttons Don't Work / Commands Fail**: Check the console output and `bot.log` for any error messages immediately after trying to use a command or button. Ensure you meet the requirements (e.g., in VC with camera on). Check if the user might be command-disabled (`!timeouts`).
-  * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages. Check the configured `LOG_GC` channel in Discord (if set) for status messages and critical errors.
+
+<!-- end list -->
+
+  +   * **`yt-dlp` Errors / Music Fails**: The `yt-dlp` library (used for YouTube/Spotify) now requires **Deno**. Make sure you have installed Deno from [deno.land/install](https://www.google.com/url?sa=E&source=gmail&q=https://deno.land/install) and that it is correctly added to your system's `PATH`.
+      * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct, copied directly from the Spotify Developer Dashboard, and have no extra spaces.
+      * **VC Connection Errors in `LOG_GC`**: If you see messages about failing to connect, check the bot's permissions in Discord. Ensure it has the "Connect" and "Speak" permissions for the `STREAMING_VC_ID`.
+      * **Buttons Don't Work / Commands Fail**: Check the console output and `bot.log` for any error messages immediately after trying to use a command or button. Ensure you meet the requirements (e.g., in VC with camera on). Check if the user might be command-disabled (`!timeouts`).
+      * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages. Check the configured `LOG_GC` channel in Discord (if set) for status messages and critical errors.
 
 ### Donations
 
