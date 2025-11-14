@@ -29,7 +29,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
 * **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression. Status messages and critical errors (like **VC connection failures**) can be sent to a dedicated Discord log channel (configurable via `LOG_GC`).
 
-<img width="1298" height="962" alt="console" src="https://github.com/user-attachments/assets/c3eb321b-88fe-4344-b33a-513fc47b5202" />
+<img width="1252" height="1022" alt="console" src="https://github.com/user-attachments/assets/789eb2bd-265b-4422-8ae1-179e77f040d5" />
 
 ### 🎵 Integrated Music System
 
@@ -250,17 +250,12 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down (-5%)
 ## Running the Bot
 
 1.  **Important**: Close all running instances of the Microsoft Edge browser. This ensures the bot can take control of the user data directory properly.
-
 2.  Open your command prompt or terminal.
-
 3.  Navigate to the folder where you saved the bot files using the `cd` command (e.g., `cd C:\Users\YourUser\Desktop\SkipCord`).
-
 4.  Run the bot using Python:
-
     ```
     python bot.py
     ```
-
 5.  The bot should now start, log its initialization steps in the console, automatically launch Edge, navigate to your configured URL, and set up the interactive menus in Discord.
 
 ### Troubleshooting
@@ -269,14 +264,11 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down (-5%)
   * **Edge Won't Launch / `user data directory is already in use`**: Double-check that **all** Edge browser windows and background processes are completely closed before starting the bot. Verify the `EDGE_USER_DATA_DIR` path in `config.py` is absolutely correct (use forward slashes `/` even on Windows) and points to the *parent* directory of `Default` or `Profile X`.
   * **"WebDriver" Error / Version Mismatch**: Make sure your Edge browser is fully updated (`edge://settings/help`). Selenium usually downloads the correct driver automatically. If you get persistent errors mentioning version mismatches, you can manually download the correct `msedgedriver.exe` for your specific Edge version from the [Microsoft Edge WebDriver page](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/) and specify its full path (including `msedgedriver.exe`) in `config.py` via the `EDGE_DRIVER_PATH` setting.
   * **Music Doesn't Play / "FFmpeg not found"**: Confirm that **FFmpeg** is installed correctly and that the folder containing `ffmpeg.exe` is added to your system's `PATH` environment variable. You might need to restart your terminal or PC after updating the PATH. Check `bot.log` for specific FFmpeg errors during playback attempts.
-
-<!-- end list -->
-
-  +   * **`yt-dlp` Errors / Music Fails**: The `yt-dlp` library (used for YouTube/Spotify) now requires **Deno**. Make sure you have installed Deno from [deno.land/install](https://www.google.com/url?sa=E&source=gmail&q=https://deno.land/install) and that it is correctly added to your system's `PATH`.
-      * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct, copied directly from the Spotify Developer Dashboard, and have no extra spaces.
-      * **VC Connection Errors in `LOG_GC`**: If you see messages about failing to connect, check the bot's permissions in Discord. Ensure it has the "Connect" and "Speak" permissions for the `STREAMING_VC_ID`.
-      * **Buttons Don't Work / Commands Fail**: Check the console output and `bot.log` for any error messages immediately after trying to use a command or button. Ensure you meet the requirements (e.g., in VC with camera on). Check if the user might be command-disabled (`!timeouts`).
-      * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages. Check the configured `LOG_GC` channel in Discord (if set) for status messages and critical errors.
+  * **`yt-dlp` Errors / Music Fails**: The `yt-dlp` library (used for YouTube/Spotify) now requires **Deno**. Make sure you have installed Deno from [deno.land/install](https://www.google.com/url?sa=E&source=gmail&q=https://deno.land/install) and that it is correctly added to your system's `PATH`.
+  * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct, copied directly from the Spotify Developer Dashboard, and have no extra spaces.
+  * **VC Connection Errors in `LOG_GC`**: If you see messages about failing to connect, check the bot's permissions in Discord. Ensure it has the "Connect" and "Speak" permissions for the `STREAMING_VC_ID`.
+  * **Buttons Don't Work / Commands Fail**: Check the console output and `bot.log` for any error messages immediately after trying to use a command or button. Ensure you meet the requirements (e.g., in VC with camera on). Check if the user might be command-disabled (`!timeouts`).
+  * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages. Check the configured `LOG_GC` channel in Discord (if set) for status messages and critical errors.
 
 ### Donations
 
