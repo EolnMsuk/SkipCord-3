@@ -15,7 +15,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine.
   * **Auto-Start**: Automatically starts the stream by running `!skip` as soon as the first user joins the streaming VC with their camera on (configurable).
   * **Auto-Pause**: Intelligently triggers a browser page refresh (`!refresh` 🔄 command) *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth. The bot also automatically handles common elements like terms checkboxes after a refresh.
-  * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.|
+  * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
 
 <img width="438" height="985" alt="menus" src="https://github.com/user-attachments/assets/436c458a-f9f4-40fe-a44b-66a48abb9aa5" />
 
