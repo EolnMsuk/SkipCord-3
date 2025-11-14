@@ -208,7 +208,7 @@ class OmegleHandler:
         self.state: Optional[BotState] = None  # To be attached by the main bot
         self._init_lock = asyncio.Lock()  # Lock to prevent concurrent initializations
 
-    async def _set_volume(self, volume_percentage: int = 40) -> bool:
+    async def _set_volume(self, volume_percentage: int) -> bool:
         """
         Executes JavaScript to set the volume slider on the Omegle page.
 
@@ -218,6 +218,8 @@ class OmegleHandler:
         Returns:
             True if the script executed successfully, False otherwise.
         """
+        # Clamp volume just in case
+        volume_percentage = max(0, min(100, volume_percentage))
         logger.info(f"Attempting to set volume to {volume_percentage}%...")
         try:
             # JavaScript to find the volume slider and set its value
@@ -251,24 +253,38 @@ class OmegleHandler:
 
     async def _attempt_send_relay(self) -> bool:
         """
-        Attempts to send the '/relay' command to the Omegle chat.
+        Attempts to send the '/relay' command and set volume based on config.
 
         This is used to enable audio relay from the browser to Discord.
-        It also sets the volume.
+        It is triggered by !skip *after* a !refresh has occurred.
 
         Returns:
             True if the command was sent or was already sent, False on failure.
         """
         async with self.state.moderation_lock:
-            # Don't send if state is missing or if it's already been sent
+            # If it was already sent (or we don't have state), do nothing.
+            # This is the important flag that `!refresh` resets.
             if not self.state or self.state.relay_command_sent:
                 return True
+            
+            # Mark as "attempted" so we don't try again until next refresh
+            # We set this true regardless of config, as the *attempt* is now happening.
+            self.state.relay_command_sent = True 
+            logger.info("Processing auto-relay and auto-volume checks...")
 
-            logger.info("Attempting to send /relay command and set volume...")
+        # --- 1. Handle Auto Volume ---
+        if self.config.AUTO_OMEGLE_VOL:
+            logger.info(f"AUTO_OMEGLE_VOL is True. Setting volume to {self.config.OMEGLE_VOL}%.")
+            await self._set_volume(volume_percentage=self.config.OMEGLE_VOL)
+        else:
+            logger.info("AUTO_OMEGLE_VOL is False. Skipping volume set.")
 
-        # Set volume first
-        await self._set_volume()
+        # --- 2. Handle Auto Relay ---
+        if not self.config.AUTO_RELAY:
+            logger.info("AUTO_RELAY is False. Skipping /relay command.")
+            return True # We're done, and it was "successful" (we did what config said)
 
+        logger.info("AUTO_RELAY is True. Attempting to send /relay command...")
         try:
             chat_input_selector = "textarea.messageInput"
             send_button_xpath = (
@@ -289,16 +305,15 @@ class OmegleHandler:
                     return True
                 except Exception as e:
                     logger.warning(
-                        f"Could not find/interact with chat elements to send /relay. Will retry on next skip. Error: {e}"
+                        f"Could not find/interact with chat elements to send /relay. Error: {e}"
                     )
                     return False
 
             relay_sent = await asyncio.to_thread(send_relay_command)
 
             if relay_sent:
-                async with self.state.moderation_lock:
-                    self.state.relay_command_sent = True
-                logger.info("Successfully sent /relay command and updated state.")
+                # The flag was already set at the start, so just log success
+                logger.info("Successfully sent /relay command.")
                 return True
 
         except Exception as e:
@@ -306,7 +321,9 @@ class OmegleHandler:
                 f"An unexpected error occurred when trying to send /relay: {e}"
             )
 
-        logger.warning("Failed to send /relay command. Will retry on next skip.")
+        # If we're here, sending /relay failed
+        logger.warning("Failed to send /relay command.")
+        # We don't reset relay_command_sent, it failed and won't be retried until next !refresh
         return False
 
     async def _is_streaming_vc_active(self) -> bool:

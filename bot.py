@@ -123,7 +123,7 @@ async def load_state_async() -> None:
         bot.state = state
         helper.state = state
         omegle_handler.state = state
-helper = BotHelper(bot, state, bot_config, save_state_async, lambda: asyncio.create_task(play_next_song()), omegle_handler=omegle_handler, update_menu_func=lambda: asyncio.create_task(update_music_menu()))
+helper = BotHelper(bot, state, bot_config, save_state_async, lambda: asyncio.create_task(play_next_song()), omegle_handler=omegle_handler, update_menu_func=lambda: asyncio.create_task(update_music_menu()), trigger_repost_func=lambda: asyncio.create_task(_trigger_full_menu_repost()))
 @tasks.loop(minutes=14)
 async def periodic_state_save() -> None:
     await save_state_async()
@@ -185,7 +185,7 @@ async def auto_delete_old_commands():
             if message.created_at < one_minute_ago:
                 if message.author == bot.user and message.embeds:
                     embed_title = message.embeds[0].title
-                    if embed_title and embed_title.strip() in ['👤  Omegle Controls  👤', '🎵  Music Controls 🎵', '🏆 Top 10 VC Members']:
+                    if embed_title and embed_title.strip() in ['👤  Omegle Controls  👤', '🎵  Music Controls 🎵', '🏆 Top 10 VC Members 🏆', '🛡️ Moderation Status 🛡️']:
                         continue
                 try:
                     await message.delete()
@@ -227,6 +227,7 @@ async def periodic_times_report_update():
 @periodic_times_report_update.before_loop
 async def before_periodic_times_report_update():
     await bot.wait_until_ready()
+
 def is_user_in_streaming_vc_with_camera(user: discord.Member) -> bool:
     streaming_vc = user.guild.get_channel(bot_config.STREAMING_VC_ID)
     return bool(streaming_vc and user in streaming_vc.members and user.voice and user.voice.self_video)
@@ -1157,6 +1158,7 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
                     moderator = entry.user
                     await helper.send_timeout_notification(after, moderator, int(duration), reason)
                     await helper._log_timeout_in_state(after, int(duration), reason, moderator.name, moderator.id)
+                    asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
                     break
         else:
             async with state.moderation_lock:
@@ -1193,9 +1195,11 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
                         state.recent_untimeouts.pop(0)
                     state.active_timeouts.pop(after.id, None)
                 await helper.send_timeout_removal_notification(after, duration, reason)
+                asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
             finally:
                 async with state.moderation_lock:
                     state.pending_timeout_removals.pop(after.id, None)
+
 @bot.event
 @handle_errors
 async def on_message(message: discord.Message) -> None:
@@ -1241,11 +1245,16 @@ async def _trigger_full_menu_repost():
                 return
             state.music_menu_message_id = None
             state.times_report_message_id = None
+            state.timeouts_report_message_id = None # Assumes state.timeouts_report_message_id exists
             await safe_purge(channel, limit=100)
             await asyncio.sleep(1)
             times_report_msg = await helper.show_times_report(channel)
-            if times_report_msg:
+            if times_report_msg and hasattr(state, 'times_report_message_id'):
                 state.times_report_message_id = times_report_msg.id
+            await asyncio.sleep(1)
+            timeouts_report_msg = await helper.show_timeouts_report(channel) 
+            if timeouts_report_msg and hasattr(state, 'timeouts_report_message_id'):
+                state.timeouts_report_message_id = timeouts_report_msg.id
             await asyncio.sleep(1)
             if state.music_enabled:
                 music_menu_msg = await helper.send_music_menu(channel)
@@ -1274,11 +1283,16 @@ async def periodic_menu_update() -> None:
                 return
             state.music_menu_message_id = None
             state.times_report_message_id = None
+            state.timeouts_report_message_id = None # Assumes state.timeouts_report_message_id exists
             await safe_purge(channel, limit=100)
             await asyncio.sleep(1)
             times_report_msg = await helper.show_times_report(channel)
-            if times_report_msg and hasattr(state, 'times_report_message_id'):
+            if times_report_msg:
                 state.times_report_message_id = times_report_msg.id
+            await asyncio.sleep(1)
+            timeouts_report_msg = await helper.show_timeouts_report(channel) 
+            if timeouts_report_msg:
+                state.timeouts_report_message_id = timeouts_report_msg.id
             await asyncio.sleep(1)
             if state.music_enabled:
                 music_menu_msg = await helper.send_music_menu(channel)
@@ -1413,6 +1427,7 @@ async def timeout_unauthorized_users_task() -> None:
                 await member.timeout(timedelta(seconds=timeout_duration), reason=reason)
                 punishment_applied = 'timed out'
                 await helper._log_timeout_in_state(member, timeout_duration, reason, 'AutoMod')
+                asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
                 logger.info(f'Timed out {member.name} for {timeout_duration}s (from {vc.name}).')
             else:
                 timeout_duration = bot_config.TIMEOUT_DURATION_THIRD_VIOLATION
@@ -1420,6 +1435,7 @@ async def timeout_unauthorized_users_task() -> None:
                 await member.timeout(timedelta(seconds=timeout_duration), reason=reason)
                 punishment_applied = 'timed out'
                 await helper._log_timeout_in_state(member, timeout_duration, reason, 'AutoMod')
+                asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
                 logger.info(f'Timed out {member.name} for {timeout_duration}s (from {vc.name}).')
             is_dm_disabled = False
             async with state.moderation_lock:
@@ -2436,6 +2452,7 @@ async def disable(ctx, user: discord.User):
         state.omegle_disabled_users.add(user.id)
     await ctx.send(f'✅ User {user.mention} has been **disabled** from using any commands.')
     logger.info(f'User {user.name} disabled from all commands by {ctx.author.name}.')
+    asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
     asyncio.create_task(save_state_async())
 @bot.command(name='enable')
 @require_allowed_user()
@@ -2451,6 +2468,7 @@ async def enable(ctx, user: discord.User):
         state.omegle_disabled_users.remove(user.id)
     await ctx.send(f'✅ User {user.mention} has been **re-enabled** and can use commands again.')
     logger.info(f'User {user.name} re-enabled for all commands by {ctx.author.name}.')
+    asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
     asyncio.create_task(save_state_async())
 @bot.command(name='ban')
 @require_allowed_user()

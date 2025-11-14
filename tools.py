@@ -388,7 +388,12 @@ class BotConfig:
     MOD_MEDIA: bool
     EMPTY_VC_PAUSE: bool
     AUTO_VC_START: bool
-    CLICK_CHECKBOX: bool  # <-- ADDED
+    CLICK_CHECKBOX: bool
+
+    # --- NEW: Auto Relay / Volume Config ---
+    AUTO_RELAY: bool
+    AUTO_OMEGLE_VOL: bool
+    OMEGLE_VOL: int
 
     # --- Moderation ---
     CAMERA_OFF_ALLOWED_TIME: int
@@ -465,7 +470,13 @@ class BotConfig:
             MOD_MEDIA=getattr(config_module, "MOD_MEDIA", True),
             EMPTY_VC_PAUSE=getattr(config_module, "EMPTY_VC_PAUSE", True),
             AUTO_VC_START=getattr(config_module, "AUTO_VC_START", False),
-            CLICK_CHECKBOX=getattr(config_module, "CLICK_CHECKBOX", True),  # <-- ADDED
+            CLICK_CHECKBOX=getattr(config_module, "CLICK_CHECKBOX", True),
+            
+            # --- NEW: Load Auto Relay / Volume Config ---
+            AUTO_RELAY=getattr(config_module, "AUTO_RELAY", True),
+            AUTO_OMEGLE_VOL=getattr(config_module, "AUTO_OMEGLE_VOL", True),
+            OMEGLE_VOL=getattr(config_module, "OMEGLE_VOL", 100),
+
             # Moderation
             CAMERA_OFF_ALLOWED_TIME=getattr(
                 config_module, "CAMERA_OFF_ALLOWED_TIME", 30
@@ -699,6 +710,7 @@ class BotState:
     # --- Message IDs (for editing) ---
     music_menu_message_id: Optional[int] = None
     times_report_message_id: Optional[int] = None
+    timeouts_report_message_id: Optional[int] = None # <-- ADDED
 
     def __post_init__(self):
         """Called after the dataclass is initialized."""
@@ -858,6 +870,7 @@ class BotState:
             "ban_message_id": self.ban_message_id,
             "music_menu_message_id": self.music_menu_message_id,
             "times_report_message_id": self.times_report_message_id,
+            "timeouts_report_message_id": self.timeouts_report_message_id, # <-- ADDED
             "vc_moderation_active": self.vc_moderation_active,
             "last_vc_connect_fail_time": self.last_vc_connect_fail_time,
         }
@@ -1003,6 +1016,7 @@ class BotState:
         state.ban_message_id = data.get("ban_message_id", None)
         state.music_menu_message_id = data.get("music_menu_message_id", None)
         state.times_report_message_id = data.get("times_report_message_id", None)
+        state.timeouts_report_message_id = data.get("timeouts_report_message_id", None) # <-- ADDED
         state.vc_moderation_active = data.get("vc_moderation_active", True)
         state.last_vc_connect_fail_time = data.get(
             "last_vc_connect_fail_time", 0.0

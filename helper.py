@@ -428,7 +428,7 @@ class HelpView(View):
     def __init__(self, helper: "BotHelper"):
         super().__init__(timeout=None)  # Persistent view
         cmds = [
-            ("⏸️", "👤", "!refresh", discord.ButtonStyle.danger),
+            ("🔄", "👤", "!refresh", discord.ButtonStyle.danger),
             ("⏭️", "👤", "!skip", discord.ButtonStyle.success),
             ("ℹ️", "👤", "!rules", discord.ButtonStyle.primary),
             ("🚩", "👤", "!report", discord.ButtonStyle.secondary),
@@ -666,6 +666,7 @@ class BotHelper:
         play_next_song_func: Optional[Callable] = None,
         omegle_handler: Optional[OmegleHandler] = None,
         update_menu_func: Optional[Callable] = None,
+        trigger_repost_func: Optional[Callable] = None, # <-- ADDED
     ):
         self.bot = bot
         self.state = state
@@ -674,6 +675,7 @@ class BotHelper:
         self.play_next_song = play_next_song_func
         self.omegle_handler = omegle_handler
         self.update_music_menu = update_menu_func
+        self.trigger_full_menu_repost = trigger_repost_func # <-- ADDED
         self.LEAVE_BATCH_DELAY_SECONDS = 10  # Batch leave events
 
     async def _schedule_leave_processing(self):
@@ -1709,15 +1711,17 @@ class BotHelper:
         if timed_out_members:
             has_data = True
             def process_timeout(member):
-                data = self.state.active_timeouts.get(member.id, {})
-                timed_by = data.get("timed_by_id", data.get("timed_by", "Unknown"))
-                reason = data.get("reason", "No reason provided")
+                data = timeout_data.get(member.id, {})
+                timed_by = data.get("timed_by_id", data.get("timed_by"))
+                reason = data.get("reason")  # <-- Get the reason
                 start_ts = data.get("start_timestamp")
-                line = f"• {member.mention} - by {get_clean_mention(timed_by)}"
-                if reason and reason != "No reason provided":
+                line = f"• {member.mention}"
+                if timed_by and timed_by != "Unknown":
+                    line += f" by {get_clean_mention(timed_by)}"
+                if reason and reason != "No reason provided":  # <-- Add the reason
                     line += f" for *{reason}*"
                 if start_ts:
-                    line += f" | <t:{int(start_ts)}:R>"  # Relative timestamp
+                    line += f" <t:{int(start_ts)}:R>"
                 return line
 
             reports["⏳ Timed Out Members"] = create_message_chunks(
@@ -1957,6 +1961,8 @@ class BotHelper:
                 f"⏰ **Mass Timeout Removal**\nExecuted by {ctx.author.mention}\n"
                 f"Removed: {len(removed)} | Failed: {len(failed)}"
             )
+        
+        asyncio.create_task(self.update_timeouts_report_menu()) # <-- ADDED
 
     @handle_errors
     async def show_rules(self, ctx) -> None:
@@ -1967,13 +1973,13 @@ class BotHelper:
         
         await ctx.send("📋 **Server Rules:**\n" + self.bot_config.RULES_MESSAGE)
 
-    @handle_errors
-    async def show_timeouts(self, ctx) -> None:
-        """!timeouts command implementation."""
-        record_command_usage(self.state.analytics, "!timeouts")
-        record_command_usage_by_user(self.state.analytics, ctx.author.id, "!timeouts")
-        
-        reports, has_data = ({}, False)
+    async def create_timeouts_report_embed(self) -> Optional[discord.Embed]:
+        """
+        Builds the embed for the persistent 'Moderation Status' menu.
+        """
+        guild = self.bot.get_guild(self.bot_config.GUILD_ID)
+        if not guild:
+            return None
 
         def get_clean_mention(identifier):
             if identifier is None:
@@ -1982,42 +1988,79 @@ class BotHelper:
                 return f"<@{identifier}>"
             return str(identifier)
 
-        # --- Report 1: Currently Timed Out ---
+        embed = discord.Embed(
+            title="🛡️ Moderation Status 🛡️",
+            color=discord.Color.blue()
+        )
+
+        has_data = False # <-- To track if any fields are added
+
+        # --- Field 1: Active Timeouts ---
         timed_out_members = [
-            member for member in ctx.guild.members if member.is_timed_out()
+            member for member in guild.members if member.is_timed_out()
         ]
+        
+        # --- Only run if there are timed out members ---
         if timed_out_members:
-            has_data = True
+            has_data = True # Mark that we have data
             timeout_data = {}
             async with self.state.moderation_lock:
                 for member in timed_out_members:
                     timeout_data[member.id] = self.state.active_timeouts.get(
                         member.id, {}
                     )
-
+            
+            # This is the function we fixed
             def process_timeout(member):
                 data = timeout_data.get(member.id, {})
                 timed_by = data.get("timed_by_id", data.get("timed_by"))
-                reason = data.get("reason")
+                reason = data.get("reason")  # <-- Get the reason
                 start_ts = data.get("start_timestamp")
                 line = f"• {member.mention}"
                 if timed_by and timed_by != "Unknown":
-                    line += f" - by {get_clean_mention(timed_by)}"
-                if reason and reason != "No reason provided":
-                    line += f" for *{reason}*"
+                    line += f" by {get_clean_mention(timed_by)}"
+                if reason and reason != "No reason provided":  # <-- Check for the reason
+                    line += f" for *{reason}*" # <-- Add the reason
                 if start_ts:
-                    line += f" | <t:{int(start_ts)}:R>"
+                    line += f" <t:{int(start_ts)}:R>"
                 return line
 
-            processed_timeouts = [process_timeout(m) for m in timed_out_members]
-            reports["⏳ Currently Timed Out"] = create_message_chunks(
-                processed_timeouts,
-                "⏳ Currently Timed Out",
-                lambda x: x,
-                as_embed=False,
+            active_timeout_lines = [process_timeout(m) for m in timed_out_members]
+
+            embed.add_field(
+                name=f"⏳ Active Timeouts",
+                value="\n".join(active_timeout_lines),
+                inline=False,
+            )
+        
+        # --- Field 2: Command Disabled Users ---
+        async with self.state.moderation_lock:
+            disabled_user_ids = list(self.state.omegle_disabled_users)
+        
+        # --- Only run if there are disabled users ---
+        if disabled_user_ids:
+            has_data = True # Mark that we have data
+            
+            async def get_disabled_user_line(user_id):
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    return f"• {user.mention} (`{user.name}`)"
+                except discord.NotFound:
+                    return f"• Unknown User (ID: `{user_id}`)"
+                except Exception:
+                    return f"• Error fetching User ID `{user_id}`"
+
+            disabled_user_lines = await asyncio.gather(
+                *(get_disabled_user_line(uid) for uid in disabled_user_ids)
             )
 
-        # --- Report 2: All Manual Untimeouts ---
+            embed.add_field(
+                name=f"🚫 Command Disabled",
+                value="\n".join(disabled_user_lines),
+                inline=False,
+            )
+
+        # --- Field 3: Recent Manual Untimeouts ---
         async with self.state.moderation_lock:
             untimeout_entries = [
                 e
@@ -2025,11 +2068,19 @@ class BotHelper:
                 if len(e) > 5 and e[5] and (e[5] != "System")
             ]
         
+        # --- Only run if there are untimeout entries ---
         if untimeout_entries:
-            has_data = True
+            has_data = True # Mark that we have data
+            untimeout_lines = []
             processed_users = set()
-
-            def process_untimeout(entry):
+            unique_untimeout_entries = []
+            # Get only the most recent untimeout per user
+            for entry in reversed(untimeout_entries):
+                if entry[0] not in processed_users:
+                    unique_untimeout_entries.append(entry)
+                    processed_users.add(entry[0])
+            
+            for entry in reversed(unique_untimeout_entries[:10]): # Show last 10
                 user_id = entry[0]
                 ts = entry[3]
                 mod_name = entry[5]
@@ -2039,76 +2090,57 @@ class BotHelper:
                 )
                 line = f"• <@{user_id}>"
                 if mod_mention and mod_mention != "Unknown":
-                    line += f" - Removed by: {mod_mention}"
+                    line += f" by {mod_mention}"
                 line += f" <t:{int(ts.timestamp())}:R>"
-                return line
+                untimeout_lines.append(line)
 
-            # Get only the most recent untimeout per user
-            unique_untimeout_entries = []
-            for entry in reversed(untimeout_entries):
-                if entry[0] not in processed_users:
-                    unique_untimeout_entries.append(entry)
-                    processed_users.add(entry[0])
-            
-            processed_untimeouts = [
-                process_untimeout(e) for e in reversed(unique_untimeout_entries)
-            ]
-            reports["🔓 All Untimeouts"] = create_message_chunks(
-                processed_untimeouts,
-                "🔓 All Untimeouts",
-                lambda x: x,
-                as_embed=True,
-                embed_color=discord.Color.blue(),
-            )
-
-        # --- Report 3: Command Disabled Users ---
-        async with self.state.moderation_lock:
-            disabled_user_ids = list(self.state.omegle_disabled_users)
+            if untimeout_lines:
+                embed.add_field(
+                    name=f"🔓 Recent Manual Untimeouts",
+                    value="\n".join(untimeout_lines),
+                    inline=False,
+                )
         
-        if disabled_user_ids:
-            has_data = True
-            
-            async def process_disabled_user(user_id):
-                try:
-                    user = await self.bot.fetch_user(user_id)
-                    return f"• {user.mention} (`{user.name}`)"
-                except discord.NotFound:
-                    return f"• Unknown User (ID: `{user_id}`)"
-                except Exception as e:
-                    logger.warning(
-                        f"Could not fetch user {user_id} for disabled list: {e}"
-                    )
-                    return f"• Error fetching User ID `{user_id}`"
-
-            processed_disabled = await asyncio.gather(
-                *(process_disabled_user(uid) for uid in disabled_user_ids)
-            )
-            reports["🚫 Command Disabled Users"] = create_message_chunks(
-                entries=processed_disabled,
-                title="🚫 Command Disabled Users",
-                process_entry=lambda x: x,
-                as_embed=True,
-                embed_color=discord.Color.dark_grey(),
-            )
-
-        # --- Send Reports ---
-        report_order = [
-            "🚫 Command Disabled Users",
-            "⏳ Currently Timed Out",
-            "🔓 All Untimeouts",
-        ]
-        for report_type in report_order:
-            if report_type in reports and reports[report_type]:
-                for chunk in reports[report_type]:
-                    if isinstance(chunk, discord.Embed):
-                        await ctx.send(embed=chunk)
-                    else:
-                        await ctx.send(chunk)
-        
+        # --- Add a description if no data was added ---
         if not has_data:
-            await ctx.send(
-                "📭 No active timeouts, untimeouts, or disabled users found."
-            )
+            embed.description = "All moderation systems are clear."
+
+        return embed
+
+    @handle_errors
+    async def show_timeouts_report(
+        self, destination: Union[commands.Context, discord.TextChannel]
+    ) -> Optional[discord.Message]:
+        """
+        Posts the persistent timeouts report menu.
+        Called by bot.py's periodic_menu_update task.
+        """
+        channel = (
+            destination.channel
+            if isinstance(destination, commands.Context)
+            else destination
+        )
+        
+        embed = await self.create_timeouts_report_embed()
+        if embed:
+            return await channel.send(embed=embed)
+        return None
+
+    @handle_errors
+    async def show_timeouts(self, ctx) -> None:
+        """!timeouts command implementation."""
+        record_command_usage(self.state.analytics, "!timeouts")
+        record_command_usage_by_user(self.state.analytics, ctx.author.id, "!timeouts")
+        
+        # This command now just generates the embed and sends it as a one-off message.
+        embed = await self.create_timeouts_report_embed()
+        if embed:
+            # Change title for the one-off command
+            embed.title = "🛡️ Current Moderation Status 🛡️"
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("Error generating moderation status report.")
+
 
     async def create_times_report_embed(self) -> Optional[discord.Embed]:
         """Generates the embed for the !times report."""
@@ -2195,10 +2227,6 @@ class BotHelper:
         description_lines = []
         tracking_time_str = format_duration(total_tracking_seconds)
         description_lines.append(f"⏳ **Tracking Started:** {tracking_time_str} ago")
-        if average_user_count > 0:
-            description_lines.append(
-                f"👥 **Average User Count:** {average_user_count}"
-            )
         description_lines.append("")
 
         if top_vc_users:
@@ -2212,15 +2240,21 @@ class BotHelper:
         else:
             description_lines.append("No VC time data available yet.")
 
+        description_lines.append("")
+
+        if average_user_count > 0:
+            description_lines.append(
+                f"👥 **Average User Count:** {average_user_count}"
+            )
+
         total_hours = math.ceil(total_time_all_users / 3600)
         total_time_str = f"{total_hours} hours"
-        description_lines.append("")
         description_lines.append(
             f"⏱ **Total VC Time (All Users):** {total_time_str}"
         )
 
         embed = discord.Embed(
-            title="🏆 Top 10 VC Members",
+            title="🏆 Top 10 VC Members 🏆",
             description="\n".join(description_lines),
             color=discord.Color.gold(),
         )
@@ -2734,6 +2768,43 @@ class BotHelper:
         except Exception as e:
             logger.error(f"Error in send_music_menu: {e}", exc_info=True)
             return None
+
+    async def update_timeouts_report_menu(self) -> None: # <-- NEW
+        """
+        Updates the persistent 'Moderation Status' menu in-place.
+        """
+        if not hasattr(self.state, 'timeouts_report_message_id') or not self.state.timeouts_report_message_id:
+            logger.debug("Skipping timeouts report update: No message ID found in state.")
+            return
+        
+        try:
+            channel = self.bot.get_channel(self.bot_config.COMMAND_CHANNEL_ID)
+            if not channel:
+                logger.warning(f"Cannot update timeouts report: Command channel {self.bot_config.COMMAND_CHANNEL_ID} not found.")
+                return
+            
+            message_to_edit = await channel.fetch_message(self.state.timeouts_report_message_id)
+            new_embed = await self.create_timeouts_report_embed()
+            
+            if new_embed:
+                await message_to_edit.edit(embed=new_embed)
+                logger.info("Successfully updated the persistent !timeouts report.")
+            
+        except discord.NotFound:
+            logger.info('Timeouts report message not found for update. Clearing ID.')
+            self.state.timeouts_report_message_id = None
+            if self.trigger_full_menu_repost:
+                logger.warning('Triggering full menu repost due to missing timeouts report.')
+                asyncio.create_task(self.trigger_full_menu_repost())
+            else:
+                logger.error('Cannot trigger full menu repost: trigger_repost_func not provided to BotHelper.')
+                
+        except discord.Forbidden:
+            logger.warning(f'Lacking permissions to edit the timeouts report message in #{channel.name}.')
+            self.state.timeouts_report_message_id = None
+            
+        except Exception as e:
+            logger.error(f'Failed to update persistent timeouts report: {e}', exc_info=True)
 
     @handle_errors
     async def confirm_and_clear_music_queue(
