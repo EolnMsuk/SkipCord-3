@@ -271,6 +271,5 @@ GLOBAL_HOTKEY_MVOLDOWN = '['           # Hotkey for volume down (-5%)
   * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages. Check the configured `LOG_GC` channel in Discord (if set) for status messages and critical errors.
 
 ### Donations
-
   * **CashApp:** `cash.app/$eolnmsuk`
   * **Bitcoin:** `bc1qm06lzkdfule3f7flf4u70xvjrp5n74lzxnnfks`
