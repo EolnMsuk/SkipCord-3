@@ -44,7 +44,6 @@ STATS_EXCLUDED_USERS = {}
 MOD_MEDIA = False
 
 # --- 🌐 BROWSER AUTOMATION (SELENIUM) 🌐 ---
-# These settings control the web browser that runs the Omegle stream.
 # The URL the bot will open. Change only if you use a different Omegle mirror.
 OMEGLE_VIDEO_URL = "https://uhmegle.com/video"
 
@@ -53,6 +52,18 @@ EMPTY_VC_PAUSE = True
 
 # If True, the bot will automatically start/skip the Omegle stream when the first user with a camera joins the STREAMING_VC_ID.
 AUTO_VC_START = False
+
+# If True, the bot will automatically scan for / click check-boxs that appear after !refresh command is used or bot starts.
+CLICK_CHECKBOX = False
+
+# Set to True if you want the bot to automatically type /relay in the Omegle chat 
+AUTO_RELAY = False
+
+# Set to True if you want the bot to automatically adjust the Omegle volume
+AUTO_OMEGLE_VOL = False
+
+# The volume percentage (0-100) the bot will set for the Omegle user's video
+OMEGLE_VOL = 100
 
 # Location of folder for screenshots (reports and bans)
 SS_LOCATION = "C:\\Users\\username\\Desktop\\screenshots"
@@ -180,6 +191,7 @@ GLOBAL_HOTKEY_MVOLDOWN = ""            # The key to trigger the !mvoldown. Uses 
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = ""              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
