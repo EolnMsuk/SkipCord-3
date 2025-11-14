@@ -82,10 +82,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
 *(Requires Admin Role or being an Allowed User + Camera On)*
 
   * `!report`: Reports the current Omegle user and saves a screenshot locally.
-  * `!help`: Sends the interactive Omegle control menu.
-  * `!music`: Sends the interactive music control menu.
   * `!bans` / `!banned`: Lists all banned users with reasons.
-  * `!timeouts`: Shows the persistent "Moderation Status" report (active timeouts, disabled users, recent untimeouts).
   * `!rtimeouts`: Removes all active timeouts after confirmation.
   * `!display <user>`: Shows a detailed profile embed for a user.
   * `!role <role>`: Lists all members in a specified role.
@@ -99,6 +96,9 @@ The bot keeps administrators informed with a robust, event-driven notification s
 *(No channel or VC restrictions)*
 
   * `!purge <count>`: Deletes a specified number of messages.
+  * `!help`: Sends the interactive Omegle control menu.
+  * `!music`: Sends the interactive music control menu.
+  * `!timeouts`: Shows the persistent "Moderation Status" report (active timeouts, disabled users, recent untimeouts).
   * `!hush`: Server-mutes all non-owner/non-admin users in the Streaming VC.
   * `!rhush` / `!removehush`: Removes server-mutes applied by `!hush`.
   * `!secret`: Server-mutes and deafens all non-owner/non-admin users in the Streaming VC.
