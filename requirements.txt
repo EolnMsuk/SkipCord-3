@@ -1,31 +1,21 @@
-# requirements.txt
+# To install all Python packages, copy and run this command in your terminal:
+# pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spotipy
+#
+# --- Other System Dependencies ---
+# These are required by the bot but cannot be installed via pip.
+# You must install them on the host machine and add them to your system's PATH.
+#
+# Deno:   Required by yt-dlp for music. Install from [deno.land/install]
+# FFmpeg: Required for all music playback. Install from [ffmpeg.org/download.html]
+# MS Edge: Required by Selenium to run the browser.
+#
+# --- Python Packages (pip) ---
 
-# Core Discord library
 discord.py
-
-# Required for voice functionality in discord.py
-PyNaCl
-
-# Browser automation for Omegle
-selenium
-
-# For streaming audio from YouTube and other sites
-yt-dlp
-
-# Spotify API interaction
-spotipy
-
-# Reading metadata (artist, title) from local audio files
-mutagen
-
-# Advanced, feature-rich logging
-loguru
-
-# For loading credentials and config from a .env file
 python-dotenv
-
-# For listening to global hotkeys
+selenium
+loguru
 keyboard
-
-# For auto typing the interests out
-pyautogui
+mutagen
+yt-dlp
+spotipy
