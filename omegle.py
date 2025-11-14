@@ -36,7 +36,7 @@ DRIVER_INIT_RETRIES = 2
 # Delay in seconds between driver initialization retries
 DRIVER_INIT_DELAY = 5
 # Quality level (1-100) for JPEG screenshots
-SCREENSHOT_JPEG_QUALITY = 75
+SCREENSHOT_JPEG_QUALITY = 100
 
 
 # --- Decorator ---
@@ -464,154 +464,18 @@ class OmegleHandler:
                 # --- Navigate and Perform Initial Actions ---
                 logger.info(f"Navigating to {self.config.OMEGLE_VIDEO_URL}...")
                 await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
-                await asyncio.sleep(1.0)
+                
+                # --- START: FIX ---
+                # Set driver as initialized *before* calling any wrapped methods
+                self._driver_initialized = True
+                logger.info("Driver initialized, running startup refresh logic...")
+                # --- END: FIX ---
+
+                # Run the !refresh logic on startup. This includes the 5.3s
+                # sleep and the checkbox click logic.
+                await self.refresh(ctx=None) # Pass None as context
 
                 is_vc_active = await self._is_streaming_vc_active()
-
-                if is_vc_active:
-                    # If users are waiting, skip to start the stream
-                    logger.info(
-                        "VC is active. Attempting pre-relay skip during initialization..."
-                    )
-                    try:
-                        keys = getattr(config, "SKIP_COMMAND_KEY", None)
-                        if not keys:
-                            keys = ["Escape", "Escape"]
-                        if not isinstance(keys, list):
-                            keys = [keys]
-
-                        for i, key in enumerate(keys):
-                            script = f"""
-                            var evt = new KeyboardEvent('keydown', {{
-                                bubbles: true, cancelable: true, key: '{key}', code: '{key}'
-                            }});
-                            document.dispatchEvent(evt);
-                            """
-                            await asyncio.to_thread(
-                                self.driver.execute_script, script
-                            )
-                            logger.info(
-                                f"Selenium (init): Sent {key} key event to page."
-                            )
-                            if i < len(keys) - 1:
-                                await asyncio.sleep(1)
-                    except Exception as e:
-                        logger.warning(
-                            f"Pre-relay skip during initialization failed: {e}"
-                        )
-                else:
-                    # If VC is empty, start and then pause the stream
-                    logger.info(
-                        "VC is not active. Starting Omegle session, then pausing..."
-                    )
-                    try:
-                        await asyncio.sleep(5.3)
-                        
-                        clicked_a_checkbox = False # Default
-                        # Click checkboxes if present AND enabled in config
-                        if self.config.CLICK_CHECKBOX:
-                            try:
-                                def perform_checkbox_click_inline():
-                                    try:
-                                        checkbox = WebDriverWait(self.driver, 5).until(
-                                            EC.element_to_be_clickable(
-                                                (By.CSS_SELECTOR, 'input[type="checkbox"]')
-                                            )
-                                        )
-                                    except Exception:
-                                        logger.info(
-                                            "(Init) No checkbox found on the page (explicit wait timed out)."
-                                        )
-                                        return False
-
-                                    if checkbox.is_selected():
-                                        logger.info(
-                                            "(Init) Checkbox already selected, no action needed."
-                                        )
-                                        return False
-
-                                    logger.info(
-                                        "(Init) Checkbox found. Moving mouse to element and clicking..."
-                                    )
-                                    
-                                    # --- ADDED RANDOM OFFSET LOGIC ---
-                                    elem_size = checkbox.size
-                                    width, height = elem_size.get('width', 20), elem_size.get('height', 20)
-                                    # Calculate a random offset, e.g., from -40% to +40% of the half-dimensions
-                                    x_offset = int(random.uniform(-width / 2 * 0.8, width / 2 * 0.8))
-                                    y_offset = int(random.uniform(-height / 2 * 0.8, height / 2 * 0.8))
-                                    logger.debug(f"(Init) Checkbox size: {width}x{height}. Clicking at offset: ({x_offset}, {y_offset})")
-                                    # --- END NEW OFFSET LOGIC ---
-
-                                    # Add a human-like pause (0.6s to 1.4s) after moving
-                                    human_hover_pause = random.uniform(0.6, 1.4)
-                                    logger.debug(f"(Init) Hovering for {human_hover_pause:.2f}s before click.")
-
-                                    actions = ActionChains(self.driver)
-                                    actions.move_to_element_with_offset(checkbox, x_offset, y_offset) # <-- USE OFFSET
-                                    actions.pause(human_hover_pause) # <-- USE RANDOM PAUSE
-                                    actions.click() # <-- Click at current (offset) mouse position
-                                    actions.perform()
-                                    return True
-
-                                clicked_a_checkbox = await asyncio.to_thread(perform_checkbox_click_inline)
-                            except Exception as e:
-                                logger.error(f"(Init) Inlined checkbox click failed: {e}")
-                        else:
-                            logger.info("(Init) CLICK_CHECKBOX is False. Skipping checkbox click during initialization.")
-                        
-                        await asyncio.sleep(1.0)
-                        
-                        if clicked_a_checkbox:
-                            logger.info("(Init) Checkbox was clicked. Automatically triggering custom_skip.")
-                            await self.custom_skip(ctx=None)
-                        else:
-                            logger.info("(Init) No checkbox clicked. Using legacy key-press skip.")
-                            # Send skip keys to start (Original logic)
-                            keys = getattr(config, "SKIP_COMMAND_KEY", None)
-                            if not keys:
-                                keys = ["Escape", "Escape"]
-                            if not isinstance(keys, list):
-                                keys = [keys]
-
-                            for i, key in enumerate(keys):
-                                script = f"""
-                                var evt = new KeyboardEvent('keydown', {{
-                                    bubbles: true, cancelable: true, key: '{key}', code: '{key}'
-                                }});
-                                document.dispatchEvent(evt);
-                                """
-                                await asyncio.to_thread(
-                                    self.driver.execute_script, script
-                                )
-                                logger.info(
-                                    f"Selenium (init): Sent {key} key event to page."
-                                )
-                                if i < len(keys) - 1:
-                                    await asyncio.sleep(1)
-
-                        # Refresh the page to "pause" it
-                        logger.info(
-                            "Session started. Now refreshing to 'pause' (EMPTY_VC_PAUSE)."
-                        )
-                        try:
-                            logger.info(
-                                "(Init) Selenium: Attempting to refresh the page (F5)."
-                            )
-                            await asyncio.to_thread(self.driver.refresh)
-                            if self.state:
-                                async with self.state.moderation_lock:
-                                    self.state.relay_command_sent = False
-                                logger.info(
-                                    "(Init) Relay command armed to be sent on the next skip after refresh."
-                                )
-                            logger.info("(Init) Selenium: Page refreshed successfully.")
-                        except Exception as e:
-                            logger.error(f"(Init) Inlined refresh failed: {e}")
-                    except Exception as e:
-                        logger.error(
-                            f"Selenium init 'start-then-pause' logic failed: {e}"
-                        )
 
                 # --- Final State Setup ---
                 if self.state:
@@ -632,8 +496,7 @@ class OmegleHandler:
                         "Bot state not attached to omegle_handler, cannot send /relay on startup."
                     )
 
-                self._driver_initialized = True
-                logger.info("Selenium driver initialized successfully.")
+                logger.info("Selenium initialization and startup refresh complete.")
                 return True  # Success
 
             except Exception as e:
@@ -736,7 +599,6 @@ class OmegleHandler:
                 logger.info(
                     f"Found {len(checkboxes)} checkbox(es). Clicking all that are not selected."
                 )
-                # actions = ActionChains(self.driver) # <-- We create this inside the loop now
                 for checkbox in checkboxes:
                     try:
                         if not checkbox.is_selected():
@@ -747,31 +609,18 @@ class OmegleHandler:
                                 logger.debug(f"Pausing {between_click_pause:.2f}s between checkbox clicks.")
                                 time.sleep(between_click_pause)
                             
+                            # --- START: MODIFICATION - JS Click Only ---
                             logger.info(
-                                "Checkbox found. Moving mouse to element and clicking..."
+                                "Checkbox found. Attempting JavaScript click..."
                             )
+                            try:
+                                self.driver.execute_script("arguments[0].click();", checkbox)
+                                logger.info("JavaScript click successful.")
+                                clicked_any = True
+                            except Exception as js_e:
+                                logger.error(f"JavaScript click also failed: {js_e}")
+                            # --- END: MODIFICATION ---
 
-                            # Add a human-like pause (0.6s to 1.4s) after moving
-                            human_hover_pause = random.uniform(0.6, 1.4)
-                            logger.debug(f"Hovering for {human_hover_pause:.2f}s before click.")
-                            
-                            # --- ADDED RANDOM OFFSET LOGIC ---
-                            elem_size = checkbox.size
-                            width, height = elem_size.get('width', 20), elem_size.get('height', 20)
-                            # Calculate a random offset, e.g., from -40% to +40% of the half-dimensions
-                            x_offset = int(random.uniform(-width / 2 * 0.8, width / 2 * 0.8))
-                            y_offset = int(random.uniform(-height / 2 * 0.8, height / 2 * 0.8))
-                            logger.debug(f"Checkbox size: {width}x{height}. Clicking at offset: ({x_offset}, {y_offset})")
-                            # --- END NEW OFFSET LOGIC ---
-
-                            # Create a *new* action chain for *each* click
-                            actions = ActionChains(self.driver)
-                            actions.move_to_element_with_offset(checkbox, x_offset, y_offset) # <-- USE OFFSET
-                            actions.pause(human_hover_pause) # <-- USE RANDOM PAUSE
-                            actions.click() # <-- Click at current (offset) mouse position
-                            actions.perform() # Execute the chain
-
-                            clicked_any = True
                         else:
                             logger.info("Checkbox already selected, no action needed.")
                     except StaleElementReferenceException:
@@ -903,7 +752,14 @@ class OmegleHandler:
             await asyncio.sleep(1.0)
 
         try:
-            logger.info("Selenium: Attempting to refresh the page (F5).")
+            # Only log the refresh if it's user-initiated (ctx is not None)
+            # or if it's the very first startup call (also ctx is None)
+            if ctx is not None:
+                logger.info("Selenium: Attempting to refresh the page (F5) via user command.")
+            else:
+                 # This will now catch the startup call from initialize()
+                logger.info("Selenium: Attempting to refresh the page (F5) via automated process (startup/pause).")
+                
             await asyncio.to_thread(self.driver.refresh)
 
             # Reset the relay command flag so it's sent on the next skip
@@ -915,29 +771,33 @@ class OmegleHandler:
                 )
             logger.info("Selenium: Page refreshed successfully.")
 
-            # Check if the checkbox click feature is enabled and if this was a user refresh
-            if ctx is not None and self.config.CLICK_CHECKBOX:
-                logger.info(
-                    "User-initiated refresh detected. CLICK_CHECKBOX is True. Waiting 5.3s to click checkboxes..."
-                )
+            # --- NEW UNIFIED LOGIC ---
+            # Per user request, *all* refreshes (bot or user) will now
+            # wait 5.3s and check for checkboxes.
+            if self.config.CLICK_CHECKBOX:
+                if ctx is not None:
+                    logger.info(
+                        "User-initiated refresh. Waiting 5.3s to click checkboxes..."
+                    )
+                else:
+                    logger.info(
+                        "Automated refresh (e.g., startup/auto-pause). Waiting 5.3s to click checkboxes..."
+                    )
+                
                 await asyncio.sleep(5.3)
-                clicked_a_checkbox = await self.find_and_click_checkbox() # Capture return value
+                clicked_a_checkbox = await self.find_and_click_checkbox() # Run the click
 
-                # If a click happened, automatically trigger a skip
                 if clicked_a_checkbox:
-                    logger.info("(Refresh) Checkbox was clicked. Automatically triggering a skip.")
-                    await asyncio.sleep(0.5) # Short delay after click
-                    await self.custom_skip(ctx=ctx) # Pass context
+                    logger.info("(Refresh) Checkbox was clicked. Awaiting user !skip.")
+                else:
+                    logger.info("(Refresh) No checkbox was clicked (or found). Awaiting user !skip.")
+                
+                # *** AUTO-SKIP BLOCK REMOVED ***
+                # The bot will now wait on this page for a user command.
 
-            elif ctx is not None and not self.config.CLICK_CHECKBOX:
-                # User-initiated, but feature is disabled
+            elif not self.config.CLICK_CHECKBOX:
                 logger.info(
-                    "User-initiated refresh detected. CLICK_CHECKBOX is False. Skipping checkbox click."
-                )
-            else:
-                # Automated refresh (ctx is None)
-                logger.info(
-                    "Automated refresh (e.g., auto-pause). Skipping checkbox click."
+                    "Refresh complete. CLICK_CHECKBOX is False. Skipping checkbox click."
                 )
 
             return True
