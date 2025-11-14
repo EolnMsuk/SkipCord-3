@@ -233,35 +233,6 @@ COMMAND_COOLDOWN = 5                 # Seconds cooldown for regular/button comma
 CAMERA_OFF_ALLOWED_TIME = 30         # Seconds a user can have camera off before punishment
 TIMEOUT_DURATION_SECOND_VIOLATION = 60  # Seconds for 2nd camera violation timeout
 TIMEOUT_DURATION_THIRD_VIOLATION = 300 # Seconds for 3rd+ camera violation timeout
-INFO_MESSAGES = ["Welcome! Rules: Camera on in VC.", "Use the buttons or commands below!"]
-JOIN_INVITE_MESSAGE = "An admin has requested your presence in the stream! Join here: <#CHANNEL_ID>" # Replace CHANNEL_ID
-RULES_MESSAGE = """## Welcome to the Server!
-**Rule 1:** Be respectful to others.
-**Rule 2:** Keep your camera on in the streaming voice channel.
-**Rule 3:** No hateful or inappropriate content.
-"""
-
-# --- MUSIC BOT SETTINGS ---
-MUSIC_ENABLED = True                 # Master toggle for all music features
-# Path to a folder with local music files (e.g., "C:/Users/YourUser/Music")
-MUSIC_LOCATION = None
-MUSIC_BOT_VOLUME = 0.2               # Default volume (0.0 to 1.0) applied on startup/play
-MUSIC_MAX_VOLUME = 1.0               # Maximum volume allowed for the !vol command (scaled: 100% = this value)
-MUSIC_DEFAULT_ANNOUNCE_SONGS = False # Announce every song change in chat
-NORMALIZE_LOCAL_MUSIC = True         # Apply audio normalization to local files (requires FFmpeg, can increase CPU usage)
-MUSIC_SUPPORTED_FORMATS = ('.mp3', '.flac', '.wav', '.ogg', '.m4a') # File types to scan
-
-# --- GLOBAL HOTKEYS (Run on the machine hosting the bot) ---
-ENABLE_GLOBAL_HOTKEY = False
-GLOBAL_HOTKEY_COMBINATION = ""       # Hotkey for !skip (uses keyboard library names)
-ENABLE_GLOBAL_MSKIP = False
-GLOBAL_HOTKEY_MSKIP = ""             # Hotkey for !mskip
-ENABLE_GLOBAL_MPAUSE = False
-GLOBAL_HOTKEY_MPAUSE = ""            # Hotkey for !mpauseplay
-ENABLE_GLOBAL_MVOLUP = False
-GLOBAL_HOTKEY_MVOLUP = ""            # Hotkey for volume up (+5%)
-ENABLE_GLOBAL_MVOLDOWN = False
-GLOBAL_HOTKEY_MVOLDOWN = ""          # Hotkey for volume down (-5%)
 ```
 
 ## Running the Bot
