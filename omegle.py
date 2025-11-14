@@ -490,24 +490,19 @@ class OmegleHandler:
 
                 # Run the !refresh logic on startup. This includes the 5.3s
                 # sleep and the checkbox click logic.
-                await self.refresh(ctx=None) # Pass None as context
+                await self.refresh(ctx=None)
 
-                is_vc_active = await self._is_streaming_vc_active()
+                # [DELETED] is_vc_active = await self._is_streaming_vc_active()
 
                 # --- Final State Setup ---
                 if self.state:
                     self.state.relay_command_sent = False
-                    if is_vc_active:
-                        # If VC was active, try to send /relay immediately
-                        logger.info(
-                            "VC active. Attempting to send /relay on startup..."
-                        )
-                        await asyncio.sleep(1.0)
-                        await self._attempt_send_relay()
-                    else:
-                        logger.info(
-                            "VC not active. Relay is armed for next user !skip."
-                        )
+                    # [DELETED] if is_vc_active: ... (the whole block)
+
+                    # [MODIFIED] Always log this message, as we always wait for skip
+                    logger.info(
+                        "Startup refresh complete. Relay is armed for next user !skip."
+                    )
                 else:
                     logger.warning(
                         "Bot state not attached to omegle_handler, cannot send /relay on startup."
