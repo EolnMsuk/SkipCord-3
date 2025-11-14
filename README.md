@@ -17,7 +17,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Auto-Pause**: Intelligently triggers a browser page refresh (`!refresh` / pause command) *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth. The bot also automatically handles common elements like terms checkboxes after a refresh.
 * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
 
-<img width="467" height="912" alt="skipcord" src="https://github.com/user-attachments/assets/9ccbcdb9-791a-4ca2-92a6-158735dc3255" />
+<img width="438" height="985" alt="menus" src="https://github.com/user-attachments/assets/c56aa415-5698-4d4c-8479-045be5c2ddc3" />
 
 ### 🛡️ Advanced Moderation & Automation
 
@@ -29,7 +29,8 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
 * **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression. Status messages and critical errors (like **VC connection failures**) can be sent to a dedicated Discord log channel (configurable via `LOG_GC`).
 
-<img width="1252" height="1022" alt="console" src="https://github.com/user-attachments/assets/789eb2bd-265b-4422-8ae1-179e77f040d5" />
+<img width="1285" height="894" alt="console" src="https://github.com/user-attachments/assets/c9d68fbe-3e00-4ecc-a0e5-90dc6d009e28" />
+
 
 ### 🎵 Integrated Music System
 
