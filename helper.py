@@ -685,6 +685,9 @@ class BotHelper:
         """
         Processes a batch of member leave events to send a single
         summary embed instead of spamming the chat.
+        
+        HIGHLIGHTED: Sends to LOG_GC and CHAT_CHANNEL if a user had roles.
+        NORMAL: Sends to CHAT_CHANNEL only if user had no roles.
         """
         async with self.state.moderation_lock:
             if not self.state.leave_buffer:
@@ -694,27 +697,55 @@ class BotHelper:
             self.state.leave_batch_task = None
 
         chat_channel = self.bot.get_channel(self.bot_config.CHAT_CHANNEL_ID)
-        if not chat_channel:
+        log_channel = self.bot.get_channel(self.bot_config.LOG_GC)
+
+        if not chat_channel and not log_channel:
+            logger.error("No chat_channel or log_channel found for leave batch processing.")
             return
 
         count = len(members_to_announce)
+        embed = None
+        is_highlight_event = False
+
         if count == 1:
             # Single user leave
             member_data = members_to_announce[0]
+            roles_list = member_data.get("roles_list", [])
+            role_string = " ".join(roles_list) if roles_list else "No roles"
+            has_roles = bool(roles_list)
+            is_highlight_event = has_roles
+
+            embed_color = discord.Color.red()
+            description = f"{member_data['mention']} **LEFT the SERVER**"
+
+            if has_roles:
+                embed_color = discord.Color.dark_red()
+                description = f"⚠️{member_data['mention']} **LEFT the SERVER**"
+
             embed = discord.Embed(
-                description=f"{member_data['mention']} **LEFT the SERVER**",
-                color=discord.Color.red(),
+                description=description,
+                color=embed_color,
             )
             embed.set_author(name=member_data["name"], icon_url=member_data["avatar_url"])
             if member_data["joined_at"]:
                 duration = datetime.now(timezone.utc) - member_data["joined_at"]
                 duration_str = format_departure_time(duration)
                 embed.add_field(name="Time in Server", value=duration_str, inline=True)
-            embed.add_field(name="Roles", value=member_data["roles"], inline=True)
+            embed.add_field(name="Roles", value=role_string, inline=True)
+        
         else:
             # Mass leave event
+            any_had_roles = any(member_data.get("roles_list") for member_data in members_to_announce)
+            is_highlight_event = any_had_roles
+
+            embed_color = discord.Color.red()
+            title = f"🚪 Mass Departure Event"
+            if any_had_roles:
+                embed_color = discord.Color.dark_red()
+                title = f"⚠️ Mass Departure Event (Included Users With Roles)"
+
             embed = discord.Embed(
-                title=f"🚪 Mass Departure Event", color=discord.Color.red()
+                title=title, color=embed_color
             )
             description_lines = []
             for member_data in members_to_announce[:10]:  # Show up to 10
@@ -722,7 +753,11 @@ class BotHelper:
                 if member_data["joined_at"]:
                     duration = datetime.now(timezone.utc) - member_data["joined_at"]
                     duration_str = f" (Stayed for {format_departure_time(duration)})"
-                description_lines.append(f"• {member_data['name']}{duration_str}")
+                
+                roles_list = member_data.get("roles_list", [])
+                roles_str = f" [Roles: {len(roles_list)}]" if roles_list else ""
+
+                description_lines.append(f"• {member_data['name']}{duration_str}{roles_str}")
             
             description = "\n".join(description_lines)
             if count > 10:
@@ -734,9 +769,26 @@ class BotHelper:
         async with self.state.moderation_lock:
             notifications_are_enabled = self.state.notifications_enabled
         
-        if notifications_are_enabled:
-            await chat_channel.send(embed=embed)
-        logger.info(f"Processed a batch of {count} member departures.")
+        if notifications_are_enabled and embed:
+            # Send to LOG_GC if it's a highlight event
+            if is_highlight_event and log_channel:
+                try:
+                    await log_channel.send(embed=embed)
+                except discord.Forbidden:
+                    logger.warning(f"Failed to send leave notification to LOG_GC: Missing permissions.")
+                except Exception as e:
+                    logger.error(f"Failed to send leave notification to LOG_GC: {e}")
+            
+            # Always send to CHAT_CHANNEL
+            if chat_channel:
+                try:
+                    await chat_channel.send(embed=embed)
+                except discord.Forbidden:
+                    logger.warning(f"Failed to send leave notification to CHAT_CHANNEL: Missing permissions.")
+                except Exception as e:
+                    logger.error(f"Failed to send leave notification to CHAT_CHANNEL: {e}")
+            
+        logger.info(f"Processed a batch of {count} member departures. Highlight: {is_highlight_event}")
 
     async def _log_timeout_in_state(
         self,
@@ -1205,11 +1257,11 @@ class BotHelper:
 
         # --- Check 3: This must be a LEAVE ---
         logger.info(f"Buffering LEAVE for {member.name}.")
-        roles = [
+        roles_list = [
             role.mention for role in member.roles if role.name != "@everyone"
         ]
-        roles.reverse()
-        role_string = " ".join(roles) if roles else "No roles"
+        roles_list.reverse()
+        role_string_for_db = " ".join(roles_list) if roles_list else "No roles"
 
         # Prep data for the batch processor
         leave_data_for_notification = {
@@ -1217,7 +1269,7 @@ class BotHelper:
             "name": member.name,
             "avatar_url": member.display_avatar.url,
             "joined_at": member.joined_at,
-            "roles": role_string,
+            "roles_list": roles_list, # <-- UPDATED
         }
 
         # Add to state and schedule the batch processor
@@ -1228,7 +1280,7 @@ class BotHelper:
                     member.name,
                     member.display_name,
                     datetime.now(timezone.utc),
-                    role_string,
+                    role_string_for_db, # <-- Use formatted string for DB
                 )
             )
             if self.state.leave_batch_task:

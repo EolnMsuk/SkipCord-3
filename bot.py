@@ -1711,6 +1711,7 @@ async def msearch(ctx, *, query: str):
     url_pattern = re.compile('https?://(www\\.)?((music\\.)?youtube|youtu|soundcloud|spotify|bandcamp)\\.(com|be)/.+')
     is_spotify_url = 'spotify' in clean_query.lower()
     is_generic_url = url_pattern.match(clean_query)
+
     if is_spotify_url:
         if not sp:
             await status_msg.edit(content='❌ Spotify support is not configured. Missing credentials in `.env` file.')
@@ -1718,6 +1719,10 @@ async def msearch(ctx, *, query: str):
         await status_msg.edit(content=f'Spotify link detected. Fetching metadata from Spotify API...')
         try:
             tracks_to_search = []
+            
+            # --- NEW: Define a max limit for playlists to prevent abuse ---
+            MAX_PLAYLIST_TRACKS = 200
+
             if '/track/' in clean_query:
                 track_info = sp.track(clean_query)
                 if track_info:
@@ -1727,23 +1732,33 @@ async def msearch(ctx, *, query: str):
                 if results:
                     tracks_to_search.extend(results['items'])
             elif '/playlist/' in clean_query:
-                results = sp.playlist_tracks(clean_query)
+                # --- MODIFIED: Fetch in pages of 50 ---
+                results = sp.playlist_tracks(clean_query, limit=50)
                 if results:
                     while results:
-                        tracks_to_search.extend((item['track'] for item in results['items'] if item['track']))
-                        if len(tracks_to_search) >= 50:
-                            logger.warning(f'Spotify playlist processing limit (50) reached. Truncating list.')
-                            tracks_to_search = tracks_to_search[:50]
-                            results = None
+                        # Add the tracks from this page
+                        new_tracks = [item['track'] for item in results['items'] if item and item.get('track')]
+                        tracks_to_search.extend(new_tracks)
+                        
+                        # --- MODIFIED: Check limit and stop if full or no more pages ---
+                        if len(tracks_to_search) >= MAX_PLAYLIST_TRACKS:
+                            logger.warning(f'Spotify playlist processing limit ({MAX_PLAYLIST_TRACKS}) reached. Truncating list.')
+                            tracks_to_search = tracks_to_search[:MAX_PLAYLIST_TRACKS]
+                            results = None # Stop the loop
                         elif results['next']:
-                            results = sp.next(results)
+                            logger.debug(f"Fetching next page of Spotify playlist... (current count: {len(tracks_to_search)})")
+                            results = sp.next(results) # Get next page
                         else:
-                            results = None
+                            results = None # No more pages
+
             if not tracks_to_search:
                 raise ValueError('Could not retrieve any tracks from the Spotify URL.')
+            
             youtube_queries = [f"{track['artists'][0]['name']} {track['name']}" for track in tracks_to_search if track and track.get('name') and track.get('artists')]
+            
             if not youtube_queries:
                 raise ValueError('Could not extract any song titles from the Spotify link.')
+            
             await status_msg.edit(content=f'⏳ Found {len(youtube_queries)} track(s). Searching on YouTube...')
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                 for yt_query in youtube_queries:
@@ -1758,12 +1773,21 @@ async def msearch(ctx, *, query: str):
                             all_hits.append({'title': video_info.get('title', 'Unknown Title'), 'path': video_info.get('webpage_url', video_info.get('url')), 'is_stream': True, 'ctx': ctx})
                     except Exception:
                         logger.warning(f"Could not find a YouTube match for Spotify query '{yt_query}'")
+        
+        # --- NEW: Catch Spotify API errors (like the 404 you saw) ---
+        except spotipy.exceptions.SpotifyException as e:
+            logger.error(f"A Spotify API error occurred: {e}", exc_info=True)
+            await status_msg.edit(content=f'❌ A Spotify API error occurred. The playlist might be private or invalid (404).')
+            return
         except Exception as e:
+            logger.error(f"An error occurred while processing the Spotify link: {e}", exc_info=True)
             await status_msg.edit(content=f'❌ An error occurred while processing the Spotify link: {e}')
             return
+        
         if not all_hits:
             await status_msg.edit(content=f'❌ Could not find any YouTube matches for the tracks in the Spotify link.')
             return
+        
         added_count, skipped_count, was_idle = (0, 0, False)
         async with state.music_lock:
             existing_paths = {s.get('path') for s in state.active_playlist + state.search_queue}
@@ -1781,16 +1805,20 @@ async def msearch(ctx, *, query: str):
                 state.search_queue.extend(new_songs_to_queue)
                 added_count = len(new_songs_to_queue)
                 was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
+        
         response_msg = f'✅ Added **{added_count}** songs to the queue from the Spotify link.'
-        if '/playlist/' in clean_query and len(youtube_queries) == 50 and (added_count <= 50):
-            response_msg = f'✅ Added **{added_count}** songs from the first 50 tracks of the Spotify playlist.'
+        if ('/playlist/' in clean_query or '/album/' in clean_query) and len(youtube_queries) == MAX_PLAYLIST_TRACKS:
+            response_msg = f'✅ Added **{added_count}** songs, hitting the {MAX_PLAYLIST_TRACKS} track limit for playlists.'
+        
         if skipped_count > 0:
             response_msg += f' ({skipped_count} duplicates were skipped).'
         await status_msg.edit(content=response_msg)
+        
         asyncio.create_task(update_music_menu())
         if was_idle and added_count > 0:
             await play_next_song()
         return
+
     elif is_generic_url:
         await status_msg.edit(content=f'⏳ Processing URL: `{clean_query}`...')
         try:
