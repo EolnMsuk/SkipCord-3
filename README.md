@@ -217,7 +217,7 @@ MEDIA_ONLY_CHANNEL_ID = None         # Channel where only media is allowed (auto
 MOD_MEDIA = False                    # Enable/disable media-only channel moderation
 EMPTY_VC_PAUSE = True                # Auto-refresh (!pause) stream when VC becomes empty of camera users
 AUTO_VC_START = False                # Auto-skip (!start) stream when first camera user joins an empty VC
-AUTO_RELAY = False                   # Automatically send /relay to chat after a refresh then skip (hides IP)
+AUTO_RELAY = False                   # Automatically send /relay to chat at start and after refresh then skip
 
 # Omegle Audio Automation
 AUTO_OMEGLE_VOL = False              # Automatically set the Omegle volume slider
