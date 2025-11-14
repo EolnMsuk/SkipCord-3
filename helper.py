@@ -1556,11 +1556,8 @@ class BotHelper:
         
         admin_commands = (
             "`!report` - Reports the current user on Omegle.\n"
-            "`!help` - Sends the interactive help menu with buttons.\n"
-            "`!music` - Sends the interactive music control menu.\n"
             "`!moff` - Disables all music features and disconnects the bot.\n"
             "`!mon` - Enables all music features and connects the bot.\n"
-            "`!timeouts` - Shows currently timed-out users.\n"
             "`!rtimeouts` - Removes all active timeouts from users.\n"
             "`!display <user>` - Shows a detailed profile for a user.\n"
             "`!role <@role>` - Lists all members in a specific role.\n"
@@ -1570,6 +1567,9 @@ class BotHelper:
         
         allowed_commands = (
             "`!purge <count>` - Purges a specified number of messages.\n"
+            "`!help` - Sends the interactive help menu with buttons.\n"
+            "`!music` - Sends the interactive music control menu.\n"
+            "`!timeouts` - Shows currently timed-out users.\n"
             "`!hush` - Server-mutes all non-admin users in the Streaming VC.\n"
             "`!rhush` / `!removehush` - Removes server-mutes from all users.\n"
             "`!secret` - Server-mutes and deafens all non-admin users.\n"

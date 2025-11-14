@@ -233,11 +233,58 @@ def is_user_in_streaming_vc_with_camera(user: discord.Member) -> bool:
     return bool(streaming_vc and user in streaming_vc.members and user.voice and user.voice.self_video)
 async def global_skip() -> None:
     guild = bot.get_guild(bot_config.GUILD_ID)
-    if guild:
-        await omegle_handler.custom_skip()
-        logger.info('Executed global skip command via hotkey.')
-    else:
+    if not guild:
         logger.error('Guild not found for global skip.')
+        return
+
+    # --- New Announcement Logic ---
+    author_name = "Bot Owner" # Default name
+    channel = None
+    command_name = "!skip"
+
+    try:
+        # 1. Find the command channel
+        channel = guild.get_channel(bot_config.COMMAND_CHANNEL_ID)
+        if not channel:
+            logger.warning("Could not find command channel for global skip announcement.")
+
+        # 2. Find a name for the "author"
+        if bot_config.ALLOWED_USERS:
+            # Get the first ID from your ALLOWED_USERS list
+            first_owner_id = list(bot_config.ALLOWED_USERS)[0]
+            owner_member = guild.get_member(first_owner_id)
+
+            if owner_member:
+                # Use their display name if they are in the server
+                author_name = owner_member.display_name
+            else:
+                # Fallback to fetching their user object if not
+                try:
+                    owner_user = await bot.fetch_user(first_owner_id)
+                    author_name = owner_user.name
+                except Exception:
+                    logger.warning("Could not fetch owner user for global skip announcement.")
+
+        # 3. Send the announcement (if channel was found)
+        if channel:
+            announcement_content = f'**{author_name}** used `{command_name}`'
+            await channel.send(announcement_content, delete_after=30.0)
+            logger.info(f'Announced global hotkey use: {author_name} used {command_name}')
+
+        # 4. Record stats (just like the button does)
+        record_command_usage(state.analytics, command_name)
+        if bot_config.ALLOWED_USERS:
+             first_owner_id = list(bot_config.ALLOWED_USERS)[0]
+             record_command_usage_by_user(state.analytics, first_owner_id, command_name)
+
+    except Exception as e:
+        # Log the error but don't stop the skip
+        logger.error(f"Failed to send global skip announcement: {e}", exc_info=True)
+    # --- End of New Logic ---
+
+    # This is the original logic, which still runs
+    await omegle_handler.custom_skip() # Passes ctx=None, which is correct
+    logger.info('Executed global skip command via hotkey.')
 async def global_mskip() -> None:
     async with state.music_lock:
         if not state.music_enabled or not bot.voice_client_music or (not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())):
@@ -1490,7 +1537,7 @@ async def announce_command_usage(ctx: commands.Context, command_name: str):
     except Exception as e:
         logger.error(f'Failed to send command usage announcement: {e}')
 @bot.command(name='help')
-@require_admin_preconditions()
+@require_allowed_user()
 @handle_errors
 async def help_command(ctx):
     await helper.send_help_menu(ctx)
@@ -1607,7 +1654,7 @@ async def enable_omegle(ctx):
     logger.warning(f'Omegle features ENABLED by {ctx.author.name}')
     await ctx.send('✅ Omegle features have been **ENABLED**. The browser is running and the Omegle help menu will now be posted periodically.')
 @bot.command(name='music')
-@require_admin_preconditions()
+@require_allowed_user()
 @handle_errors
 async def music_command(ctx):
     if not state.music_enabled:
@@ -2713,12 +2760,12 @@ async def rules(ctx) -> None:
         await announce_command_usage(ctx, f'!{ctx.invoked_with}')
         await helper.show_rules(ctx)
 @bot.command(name='timeouts')
-@require_admin_preconditions()
+@require_allowed_user()
 @handle_errors
 async def timeouts(ctx) -> None:
     await helper.show_timeouts(ctx)
 @bot.command(name='times')
-@require_user_preconditions()
+@require_allowed_user()
 @handle_errors
 async def time_report(ctx) -> None:
     await helper.show_times_report(ctx)
