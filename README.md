@@ -207,21 +207,20 @@ SS_LOCATION = 'screenshots'
 # --- PERMISSIONS ---
 ALLOWED_USERS = {123456789012345678, 987654321098765432} # User IDs with full bot access (Owner Commands)
 ADMIN_ROLE_NAME = ["Admin", "Moderator"] # Roles that can use Admin Commands
-MOVE_ROLE_NAME = ["MoveRole"]           # Roles allowed to use the !move command (if not Allowed User)
+MOVE_ROLE_NAME = ["Admin", "Mover"]           # Roles allowed to use the !move command (if not Allowed User)
 
 # --- OPTIONAL FEATURES ---
 LOG_GC = None                        # Channel ID for bot status/error messages (e.g., online, VC connect fail)
-# (Set to None to disable Discord logging channel)
 ALT_VC_ID = []                       # List of additional voice channel IDs to moderate (apply camera rules)
 AUTO_STATS_CHAN = 123456789012345678 # Channel for daily auto-stats reports & BAN SCREENSHOTS
 MEDIA_ONLY_CHANNEL_ID = None         # Channel where only media is allowed (automatically delete non-media messages)
-MOD_MEDIA = True                     # Enable/disable media-only channel moderation
+MOD_MEDIA = False                    # Enable/disable media-only channel moderation
 EMPTY_VC_PAUSE = True                # Auto-refresh (!pause) stream when VC becomes empty of camera users
 AUTO_VC_START = False                # Auto-skip (!start) stream when first camera user joins an empty VC
+AUTO_RELAY = False                   # Automatically send /relay to chat after a refresh then skip (hides IP)
 
-# Omegle Audio Automation (v3.1+)
-AUTO_RELAY = True                    # Automatically send /relay command to capture stream audio
-AUTO_OMEGLE_VOL = True               # Automatically set the Omegle volume slider
+# Omegle Audio Automation
+AUTO_OMEGLE_VOL = False              # Automatically set the Omegle volume slider
 OMEGLE_VOL = 100                     # Volume (0-100) to set if AUTO_OMEGLE_VOL is True
 
 STATS_EXCLUDED_USERS = {123456789012345678} # User IDs to exclude from !times, !stats
