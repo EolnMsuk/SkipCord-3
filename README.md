@@ -17,7 +17,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Auto-Pause**: Intelligently triggers a browser page refresh (`!refresh` 🔄 command) *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth. The bot also automatically handles common elements like terms checkboxes after a refresh.
   * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
 
-<img width="438" height="985" alt="menus" src="https://github.com/user-attachments/assets/436c458a-f9f4-40fe-a44b-66a48abb9aa5" />
+  <img width="438" height="985" alt="menus" src="https://github.com/user-attachments/assets/436c458a-f9f4-40fe-a44b-66a48abb9aa5" />
 
 ### 🛡️ Advanced Moderation & Automation
 
@@ -54,7 +54,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
   * **Moderation Actions**: Timeouts Added/Removed, Role Changes, **VC Moves**.
   * **Bot & Stream Status**: Bot Online, Stream Auto-Pause/Start, Browser Health (including **VC connection errors** sent to the configured `LOG_GC` channel), and Omegle Ban/Unban status notifications (including **pre-ban screenshots posted to Discord**).
 
-<img width="445" height="493" alt="noti" src="https://github.com/user-attachments/assets/8b818810-d92a-4ab4-b78e-f4eb4dac232e" />
+  <img width="445" height="493" alt="noti" src="https://github.com/user-attachments/assets/8b818810-d92a-4ab4-b78e-f4eb4dac232e" />
 
 ## 📋 Command List
 
