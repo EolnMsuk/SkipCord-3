@@ -2834,7 +2834,7 @@ async def role_members_error(ctx, error: Exception) -> None:
         logger.error(f'Error in role command: {error}', exc_info=True)
         await ctx.send('An unexpected error occurred.')
 @bot.command(name='bans', aliases=['banned'])
-@require_admin_preconditions()
+@require_allowed_user()
 @handle_errors
 async def bans(ctx) -> None:
     await helper.show_bans(ctx)
