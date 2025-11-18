@@ -492,14 +492,11 @@ class OmegleHandler:
                 # sleep and the checkbox click logic.
                 await self.refresh(ctx=None)
 
-                # [DELETED] is_vc_active = await self._is_streaming_vc_active()
-
                 # --- Final State Setup ---
                 if self.state:
                     self.state.relay_command_sent = False
-                    # [DELETED] if is_vc_active: ... (the whole block)
 
-                    # [MODIFIED] Always log this message, as we always wait for skip
+                    # Always log this message, as we always wait for skip
                     logger.info(
                         "Startup refresh complete. Relay is armed for next user !skip."
                     )
@@ -582,92 +579,93 @@ class OmegleHandler:
     @require_healthy_driver
     async def find_and_click_checkbox(self) -> bool:
         """
-        Finds and clicks the Omegle terms-of-service checkboxes.
-        This v2.5 feature is used after a user-initiated refresh.
-
-        Returns:
-            True if a click was performed, False otherwise.
+        Finds and clicks ANY unselected checkboxes on the page.
+        
+        Includes logic to handle Cloudflare 'Verify you are human' widgets 
+        by detecting and switching into challenge iframes.
         """
         try:
             def perform_checkbox_click():
+                clicked_something = False
+
+                # --- 1. CLOUDFLARE / IFRAME HANDLING ---
                 try:
-                    # Wait for checkboxes to be present
-                    checkboxes = WebDriverWait(self.driver, 5).until(
+                    # Look for iframes that might contain Cloudflare challenges
+                    # Common ID is 'turnstile-wrapper' or src containing 'cloudflare'
+                    iframes = self.driver.find_elements(By.XPATH, "//iframe[contains(@src, 'cloudflare') or contains(@title, 'challenge')]")
+                    
+                    for frame in iframes:
+                        try:
+                            self.driver.switch_to.frame(frame)
+                            logger.info("Switched to potential Cloudflare iframe.")
+                            
+                            # Attempt to find the specific Cloudflare checkbox/body
+                            # Cloudflare often uses a specific shadow element, but a general click on the body or input usually triggers it
+                            cf_checkbox = WebDriverWait(self.driver, 2).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='checkbox'], label.ctp-checkbox-label, div.ctp-checkbox-container"))
+                            )
+                            
+                            if cf_checkbox:
+                                logger.info("Found element inside Cloudflare frame. Clicking...")
+                                cf_checkbox.click()
+                                clicked_something = True
+                                time.sleep(2.0) # Wait for Cloudflare to process the click
+                                
+                        except Exception:
+                            # If we can't find it or click it in this frame, just continue
+                            pass
+                        finally:
+                            # ALWAYS switch back to default content
+                            self.driver.switch_to.default_content()
+                
+                except Exception as cf_e:
+                    logger.debug(f"Cloudflare check skipped or failed: {cf_e}")
+                    self.driver.switch_to.default_content()
+
+                # --- 2. STANDARD PAGE CHECKBOXES ---
+                try:
+                    # Wait for any standard checkboxes to be present on the main page
+                    checkboxes = WebDriverWait(self.driver, 3).until(
                         EC.presence_of_all_elements_located(
                             (By.CSS_SELECTOR, 'input[type="checkbox"]')
                         )
                     )
-                except Exception as wait_e:
-                    logger.info(
-                        f"No checkboxes found on the page (explicit wait timed out)."
-                    )
-                    return False
-
-                clicked_any = False
-                if not checkboxes:
-                    logger.info("No checkboxes found on the page.")
-                    return False
-
-                logger.info(
-                    f"Found {len(checkboxes)} checkbox(es). Clicking all that are not selected."
-                )
-                for checkbox in checkboxes:
-                    try:
-                        if not checkbox.is_selected():
-
-                            # If we've already clicked one, pause randomly before the next
-                            if clicked_any:
-                                between_click_pause = random.uniform(0.4, 0.9)
-                                logger.debug(f"Pausing {between_click_pause:.2f}s between checkbox clicks.")
-                                time.sleep(between_click_pause)
-                            
-                            # --- START: MODIFICATION - JS Click Only ---
-                            logger.info(
-                                "Checkbox found. Attempting JavaScript click..."
-                            )
+                    
+                    if checkboxes:
+                        logger.info(f"Found {len(checkboxes)} standard checkbox(es).")
+                        for checkbox in checkboxes:
                             try:
-                                self.driver.execute_script("arguments[0].click();", checkbox)
-                                logger.info("JavaScript click successful.")
-                                clicked_any = True
-                            except Exception as js_e:
-                                logger.error(f"JavaScript click also failed: {js_e}")
-                            # --- END: MODIFICATION ---
+                                if not checkbox.is_selected():
+                                    if clicked_something:
+                                        time.sleep(random.uniform(0.4, 0.9))
+                                    
+                                    logger.info("Unchecked box found. Attempting JavaScript click...")
+                                    self.driver.execute_script("arguments[0].click();", checkbox)
+                                    clicked_something = True
+                            except StaleElementReferenceException:
+                                continue
+                except Exception:
+                    # No standard checkboxes found (timeout), which is fine
+                    pass
 
-                        else:
-                            logger.info("Checkbox already selected, no action needed.")
-                    except StaleElementReferenceException:
-                        logger.warning(
-                            "Checkbox became stale while iterating. Skipping it."
-                        )
-                        continue
-                return clicked_any # Returns True if any click happened, False otherwise
+                return clicked_something
 
             clicked = await asyncio.to_thread(perform_checkbox_click)
             if clicked:
-                logger.info("Successfully clicked one or more checkboxes.")
-            return clicked # Pass the boolean result up
-        except NoSuchElementException:
-            logger.info("No checkbox found on the page.")
-            return False
+                logger.info("Successfully handled checkboxes (Cloudflare or Standard).")
+            return clicked 
+            
         except Exception as e:
-            logger.error(
-                f"An error occurred while trying to click the checkbox: {e}",
-                exc_info=True,
-            )
+            logger.error(f"An error occurred in find_and_click_checkbox: {e}", exc_info=True)
             return False
 
     @require_healthy_driver
     async def custom_skip(self, ctx: Optional[commands.Context] = None) -> bool:
         """
         Performs the 'skip' action by sending 'Escape' key presses.
-
-        Also attempts to send the /relay command if it hasn't been sent yet.
-
-        Args:
-            ctx: The Discord context, for sending error messages.
-
-        Returns:
-            True if the skip was successful, False otherwise.
+        
+        If the bot is on the wrong URL (e.g. after auto-pause or redirect),
+        it navigates back, waits 5.3s, checks checkboxes, waits ANOTHER 5.3s, and THEN skips.
         """
         # Check if we're on the wrong page
         current_url = await asyncio.to_thread(lambda: self.driver.current_url)
@@ -680,8 +678,22 @@ class OmegleHandler:
                     "Browser is on the wrong page. Redirecting to the stream now...",
                     delete_after=10,
                 )
+            
+            # 1. Navigate
             await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
-            await asyncio.sleep(2.0)
+            
+            # 2. Wait (Full 'Start-up' wait)
+            logger.info("Navigated to Video URL. Waiting 5.3s for page load/challenges...")
+            await asyncio.sleep(5.3)
+
+            # 3. Check for Checkboxes
+            if self.config.CLICK_CHECKBOX:
+                logger.info("Checking for checkboxes (Cloudflare/ToS) after navigation...")
+                await self.find_and_click_checkbox()
+                
+                # --- 4. ADDED DELAY: Post-Checkbox Wait ---
+                logger.info("Finished checkbox check. Waiting 5.3s before skipping...")
+                await asyncio.sleep(5.3)
 
         # Get skip keys from config, default to ['Escape', 'Escape']
         keys = getattr(config, "SKIP_COMMAND_KEY", None)
@@ -736,45 +748,49 @@ class OmegleHandler:
         """
         Refreshes the browser page.
 
-        This is used for the `!refresh` command and for auto-pausing.
-        It also resets the `relay_command_sent` flag.
-
-        Args:
-            ctx: The Discord context, for sending error messages.
-
-        Returns:
-            True if the refresh was successful, False otherwise.
+        Ensures the bot is on the correct Video URL first, then performs an F5 refresh,
+        and finally handles checkbox clicking.
         """
-        # Check if we're on the wrong page
-        current_url = await asyncio.to_thread(lambda: self.driver.current_url)
-        if self.config.OMEGLE_VIDEO_URL not in current_url:
-            logger.warning(
-                f"URL Mismatch: Not on video page (Currently at: {current_url}). Redirecting before refresh."
-            )
-            if ctx:
-                msg_content = "Browser is on the wrong page. Redirecting to the stream now..."
-                if isinstance(ctx, discord.Interaction):
-                    if ctx.response.is_done():
-                        await ctx.followup.send(msg_content, delete_after=10)
-                    else:
-                        await ctx.response.send_message(msg_content, delete_after=10)
-                elif hasattr(ctx, "send"):
-                    await ctx.send(msg_content, delete_after=10)
-            await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
-            await asyncio.sleep(1.0)
-
+        # --- 1. URL Check & Navigation ---
+        # This block ensures we are on the correct page BEFORE checking checkboxes.
         try:
-            # Only log the refresh if it's user-initiated (ctx is not None)
-            # or if it's the very first startup call (also ctx is None)
+            current_url = await asyncio.to_thread(lambda: self.driver.current_url)
+            
+            # If the config URL is NOT in the current URL, force a navigation first
+            if self.config.OMEGLE_VIDEO_URL not in current_url:
+                logger.warning(
+                    f"URL Mismatch during Refresh: Not on video page (Currently at: {current_url}). Redirecting..."
+                )
+                
+                # Notify user if applicable
+                if ctx:
+                    msg_content = "Browser is on the wrong page. Redirecting to the stream now..."
+                    if isinstance(ctx, discord.Interaction):
+                        if ctx.response.is_done():
+                            await ctx.followup.send(msg_content, delete_after=10)
+                        else:
+                            await ctx.response.send_message(msg_content, delete_after=10)
+                    elif hasattr(ctx, "send"):
+                        await ctx.send(msg_content, delete_after=10)
+                
+                # Navigate to the correct URL
+                await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
+                await asyncio.sleep(2.0) # Wait for load before refreshing
+
+        except Exception as e:
+            logger.error(f"Error checking/navigating URL in refresh: {e}")
+
+        # --- 2. The "Normal" Refresh Stuff ---
+        try:
             if ctx is not None:
                 logger.info("Selenium: Attempting to refresh the page (F5) via user command.")
             else:
-                 # This will now catch the startup call from initialize()
                 logger.info("Selenium: Attempting to refresh the page (F5) via automated process (startup/pause).")
-                
+            
+            # Run the F5 Refresh
             await asyncio.to_thread(self.driver.refresh)
 
-            # Reset the relay command flag so it's sent on the next skip
+            # Reset the relay command flag
             if self.state:
                 async with self.state.moderation_lock:
                     self.state.relay_command_sent = False
@@ -783,9 +799,7 @@ class OmegleHandler:
                 )
             logger.info("Selenium: Page refreshed successfully.")
 
-            # --- NEW UNIFIED LOGIC ---
-            # Per user request, *all* refreshes (bot or user) will now
-            # wait 5.3s and check for checkboxes.
+            # --- 3. Wait 5.3s and Click Checkboxes ---
             if self.config.CLICK_CHECKBOX:
                 if ctx is not None:
                     logger.info(
@@ -797,15 +811,14 @@ class OmegleHandler:
                     )
                 
                 await asyncio.sleep(5.3)
-                clicked_a_checkbox = await self.find_and_click_checkbox() # Run the click
+                
+                # Runs the checkbox logic (Cloudflare or Normal)
+                clicked_a_checkbox = await self.find_and_click_checkbox()
 
                 if clicked_a_checkbox:
                     logger.info("(Refresh) Checkbox was clicked. Awaiting user !skip.")
                 else:
                     logger.info("(Refresh) No checkbox was clicked (or found). Awaiting user !skip.")
-                
-                # *** AUTO-SKIP BLOCK REMOVED ***
-                # The bot will now wait on this page for a user command.
 
             elif not self.config.CLICK_CHECKBOX:
                 logger.info(
