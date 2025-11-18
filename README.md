@@ -62,65 +62,63 @@ The bot keeps administrators informed with a robust, event-driven notification s
 
 *(Requires being in the Streaming VC with camera on)*
 
-  * `!skip` / `!start`: Skips the current Omegle user.
-  * `!refresh`: Refreshes the Omegle browser page (like F5) and attempts to handle initial prompts like checkboxes.
-  * `!info` / `!about`: Shows pre-configured server information messages.
-  * `!rules`: Displays the server rules.
-  * `!times`: Shows the top 10 most active VC users.
-  * `!m` / `!msearch <query>`: Searches for a song/URL/playlist to add to the queue.
-  * `!q` / `!queue`: Displays the interactive song queue with pagination and jump-to functionality.
-  * `!np` / `!nowplaying`: Shows details about the currently playing song.
-  * `!mskip`: Skips the current song. Disables loop mode if active.
-  * `!mpp` / `!mpauseplay`: Toggles music play/pause. Starts playback if stopped.
-  * `!mclear`: Clears all user-added songs from the queue after confirmation.
-  * `!mshuffle`: Cycles music mode (Shuffle -\> Alphabetical -\> Loop).
-  * `!vol` / `!volume <0-100>`: Sets the music volume (relative to `MUSIC_MAX_VOLUME`).
-  * `!playlist <save|load|list|delete> [name]`: Manages persistent song playlists.
+* `!skip` - Skips the current Omegle user.
+* `!refresh` - Refreshes the Omegle page.
+* `!info` - Shows server info/rules.
+* `!rules` - Shows the server rules.
+* `!mskip` - Skips the current song.
+* `!mpp` - Toggles music play and pause.
+* `!vol 1-100` - Sets music volume (0-100).
+* `!m songname` - Searches for songs/URLs.
+* `!mclear` - Clears all songs from the search queue.
+* `!mshuffle` - Cycles music mode (Shuffle -> Alphabetical -> Loop).
+* `!np` - Shows currently playing song.
+* `!q` - Displays the interactive song queue.
+* `!playlist <save|load|list|delete> [name]` - Manages playlists.
 
 ### 🛡️ Admin Commands
 
 *(Requires Admin Role or being an Allowed User + Camera On)*
 
-  * `!report`: Reports the current Omegle user and saves a screenshot locally.
-  * `!bans` / `!banned`: Lists all banned users with reasons.
-  * `!rtimeouts`: Removes all active timeouts after confirmation.
-  * `!display <user>`: Shows a detailed profile embed for a user.
-  * `!role <role>`: Lists all members in a specified role.
-  * `!move <user>`: Moves a user from the Streaming VC to the Punishment VC (reason: Sleeping). Has a 1-hour cooldown for non-owners.
-  * `!commands`: Shows this list of all commands.
-  * `!mon`: Enables music features, connects the bot, and refreshes menus.
-  * `!moff`: Disables music features, clears queue, stops playback, and disconnects the bot.
+* `!report` - Reports the current user on Omegle.
+* `!moff` - Disables all music features and disconnects the bot.
+* `!mon` - Enables all music features and connects the bot.
+* `!rtimeouts` - Removes all active timeouts from users.
+* `!display <user>` - Shows a detailed profile for a user.
+* `!role <@role>` - Lists all members in a specific role.
+* `!move <@user>` - Moves a user from Streaming to Punishment VC.
+* `!commands` - Shows this list of all commands.
 
 ### 👑 Owner Commands (Allowed Users Only)
 
 *(No channel or VC restrictions)*
 
-  * `!purge <count>`: Deletes a specified number of messages.
-  * `!help`: Sends the interactive Omegle control menu.
-  * `!music`: Sends the interactive music control menu.
-  * `!timeouts`: Shows the persistent "Moderation Status" report (active timeouts, disabled users, recent untimeouts).
-  * `!hush`: Server-mutes all non-owner/non-admin users in the Streaming VC.
-  * `!rhush` / `!removehush`: Removes server-mutes applied by `!hush`.
-  * `!secret`: Server-mutes and deafens all non-owner/non-admin users in the Streaming VC.
-  * `!rsecret` / `!removesecret`: Removes server-mutes/deafens applied by `!secret`.
-  * `!modon` / `!modoff`: Toggles automated VC moderation (camera checks, punishments).
-  * `!disablenotifications` / `!enablenotifications`: Toggles event notifications (leave, unban, kick, etc.).
-  * `!disable <user>`: Prevents a user from using any bot commands or buttons.
-  * `!enable <user>`: Re-enables a command-disabled user.
-  * `!ban <user_mention_or_id...>`: Bans one or more users with interactive reason prompt.
-  * `!unban <user_id,...>`: Unbans one or more users by ID after confirmation.
-  * `!unbanall`: Unbans every user from the server after confirmation.
-  * `!top`: Lists the top 10 oldest server members and Discord accounts.
-  * `!roles`: Lists all server roles and their members.
-  * `!admin` / `!owner`: Lists configured bot owners and admins.
-  * `!whois`: Shows a 24-hour report of all server activity (joins, leaves, bans, kicks, timeouts *with reasons*, etc.).
-  * `!stats`: Shows a detailed analytics report (VC time, command usage, violations).
-  * `!join`: DMs a pre-configured join invite message to all users with an admin role.
-  * `!clearstats`: Clears all statistical data after confirmation.
-  * `!clearwhois`: Clears all historical event data (`!whois`) after confirmation.
-  * `!shutdown`: Safely shuts down the bot, saving state.
-  * `!enableomegle`: Enables Omegle features and launches/initializes the browser.
-  * `!disableomegle`: Disables Omegle features and closes the browser.
+* `!purge <count>` - Purges a specified number of messages.
+* `!help` - Sends the interactive help menu with buttons.
+* `!music` - Sends the interactive music control menu.
+* `!times` - Shows top VC users by time.
+* `!timeouts` - Shows currently timed-out users.
+* `!bans` - Shows currently banned users.
+* `!hush` - Server-mutes all non-admin users in the Streaming VC.
+* `!rhush` / `!removehush` - Removes server-mutes from all users.
+* `!secret` - Server-mutes and deafens all non-admin users.
+* `!rsecret` / `!removesecret` - Removes mute/deafen from all users.
+* `!modoff` / `!modon` - Toggles automated VC moderation.
+* `!disablenotifications` / `!enablenotifications` - Toggles event notifications.
+* `!ban <user>` - Bans user(s) with a reason prompt.
+* `!unban <user_id>` - Unbans a user by ID.
+* `!unbanall` - Unbans every user from the server.
+* `!disable <user>` - Disables a user from using commands.
+* `!enable <user>` - Re-enables a disabled user.
+* `!top` - Lists the top 10 oldest server/Discord accounts.
+* `!roles` - Lists all server roles and their members.
+* `!admin` / `!owner` - Lists configured bot owners and admins.
+* `!whois` - Shows a 24-hour report of server activity.
+* `!stats` - Shows a detailed analytics report.
+* `!join` - DMs a join invite to all users with an admin role.
+* `!clearstats` - Clears all statistical data.
+* `!clearwhois` - Clears all historical event data.
+* `!shutdown` - Safely shuts down the bot.
 
 ## ⚙️ Setup & Configuration
 
