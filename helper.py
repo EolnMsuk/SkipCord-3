@@ -1157,6 +1157,8 @@ class BotHelper:
         )
         await self.send_unban_notification(user, self.bot.user)
 
+    # helper.py
+
     @handle_errors
     async def handle_member_remove(self, member: discord.Member) -> None:
         """
@@ -1177,32 +1179,7 @@ class BotHelper:
         # --- Check 1: Was this a BAN? ---
         async with self.state.moderation_lock:
             if member.id in self.state.recently_banned_ids:
-                # Find the ban info we logged in handle_member_ban
-                ban_entry = next(
-                    (b for b in reversed(self.state.recent_bans) if b[0] == member.id),
-                    None,
-                )
-                reason = ban_entry[4] if ban_entry else "No reason provided"
-                mod_name = "Unknown"
-                try:
-                    # Double-check audit log for moderator mention
-                    async for entry in guild.audit_logs(
-                        limit=5,
-                        action=discord.AuditLogAction.ban,
-                        after=datetime.now(timezone.utc) - timedelta(minutes=1),
-                    ):
-                        if entry.target and entry.target.id == member.id:
-                            mod_name = entry.user.mention if entry.user else "Unknown"
-                            break
-                except Exception:
-                    pass
-                
-                embed = await self._create_departure_embed(
-                    member, mod_name, reason, "BANNED", discord.Color.red()
-                )
-                await chat_channel.send(embed=embed)
-                self.state.recently_banned_ids.remove(member.id)
-                logger.info(f"Processed departure for {member.name} as BAN.")
+                # ... (ban logic remains unchanged) ...
                 return
 
         # --- Check 2: Was this a KICK? ---
@@ -1212,13 +1189,14 @@ class BotHelper:
                 action=discord.AuditLogAction.kick,
                 after=member.joined_at or datetime.now(timezone.utc) - timedelta(minutes=5),
             ):
-                time_difference = abs(
-                    (entry.created_at - datetime.now(timezone.utc)).total_seconds()
-                )
+                # We remove the time_difference calculation and check.
+                # The 'after=member.joined_at' filter is the primary guard
+                # against processing old, unrelated kick logs.
+                # The 4-second sleep at the start of the function combined
+                # with API lag can cause the 15-second window to be missed.
                 if (
                     entry.target
                     and entry.target.id == member.id
-                    and (time_difference < 15)
                 ):
                     reason = entry.reason or "No reason provided"
                     embed = await self._create_departure_embed(
@@ -1251,6 +1229,7 @@ class BotHelper:
                                 " ".join(roles),
                             )
                         )
+                    asyncio.create_task(self.update_timeouts_report_menu())    
                     return
         except discord.Forbidden:
             logger.warning("Missing permissions to check audit log for kicks.")

@@ -228,6 +228,21 @@ async def periodic_times_report_update():
 async def before_periodic_times_report_update():
     await bot.wait_until_ready()
 
+@tasks.loop(minutes=1)
+async def periodic_timeouts_report_update():
+    # This helper function already contains all necessary logic:
+    # 1. Checks if state.timeouts_report_message_id exists.
+    # 2. Fetches the message.
+    # 3. Creates the new embed.
+    # 4. Edits the message.
+    # 5. Handles all errors, including discord.NotFound and triggering
+    #    a full menu repost if the message is missing.
+    await helper.update_timeouts_report_menu()
+
+@periodic_timeouts_report_update.before_loop
+async def before_periodic_timeouts_report_update():
+    await bot.wait_until_ready()
+
 def is_user_in_streaming_vc_with_camera(user: discord.Member) -> bool:
     streaming_vc = user.guild.get_channel(bot_config.STREAMING_VC_ID)
     return bool(streaming_vc and user in streaming_vc.members and user.voice and user.voice.self_video)
@@ -379,24 +394,37 @@ async def ensure_voice_connection() -> bool:
     except ClientException as e:
         logger.debug(f'Ensure VC: Caught ClientException: {type(e).__name__} - {e}')
         if 'Already connected' in str(e):
-            logger.warning(f"Ensure VC: Race condition ('Already connected') caught. Verifying...")
-            if guild.voice_client and guild.voice_client.is_connected():
-                logger.info('Ensure VC: Verified existing connection after race.')
-                bot.voice_client_music = guild.voice_client
+            logger.warning(f"Ensure VC: Race condition ('Already connected') caught. Retrieving existing client...")
+            
+            # --- START FIX ---
+            # Don't check .is_connected(). Just get the client object.
+            # guild.voice_client is the "official" way to get the client for a guild.
+            existing_client = guild.voice_client 
+            
+            if existing_client:
+                logger.info('Ensure VC: Successfully retrieved existing voice client.')
+                # This is the crucial state sync
+                bot.voice_client_music = existing_client 
+                
+                # Now, just make sure it's in the right channel.
                 if bot.voice_client_music.channel != target_vc:
-                    logger.warning(f'Ensure VC: Race connected to wrong channel ({bot.voice_client_music.channel.name}). Moving...')
+                    logger.warning(f'Ensure VC: Existing client in wrong channel ({bot.voice_client_music.channel.name}). Moving...')
                     try:
                         await bot.voice_client_music.move_to(target_vc)
-                        logger.info('Ensure VC: Move after race successful.')
-                        return True
+                        logger.info('Ensure VC: Move successful.')
                     except Exception as move_e:
-                        logger.error(f'Ensure VC: Move after race failed: {move_e}')
-                else:
-                    return True
+                        logger.error(f'Ensure VC: Move failed: {move_e}')
+                
+                return True # We have a client and it's (now) in the right channel
+            
             else:
-                logger.error("Ensure VC: 'Already connected' error, but verification failed!")
-            error_to_report = None
-            logger.debug("Ensure VC: error_to_report explicitly set to None for 'Already connected'.")
+                # This is the state from the logs: "Already connected" but guild.voice_client is None.
+                # This is a deep library-level bug. We can't fix it, only break the loop.
+                logger.error("Ensure VC: 'Already connected' error, but guild.voice_client is None! This is an inconsistent state.")
+                # We must not return True, as we failed.
+                error_to_report = e # Let the error reporting logic handle it.
+            # --- END FIX ---
+
         else:
             logger.error(f'Ensure VC: Reporting non-race ClientException.', exc_info=True)
             error_to_report = e
@@ -883,8 +911,11 @@ async def _soundboard_grace_protocol(member: discord.Member, config: BotConfig):
         except Exception as e:
             logger.error(f'Failed to re-mute {member_after_sleep.name} after grace period: {e}')
 async def manage_menu_task_presence():
-    if not bot_config.EMPTY_VC_PAUSE or not state.omegle_enabled:
-        return
+    # This function now correctly handles all EMPTY_VC_PAUSE logic.
+    
+    if not state.omegle_enabled:
+        return # If omegle is off, do nothing.
+
     await asyncio.sleep(1.5)
     guild = bot.get_guild(bot_config.GUILD_ID)
     if not guild:
@@ -892,14 +923,75 @@ async def manage_menu_task_presence():
     streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
     if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel):
         return
+    
+    # This is the key logic: are there active users?
     human_listeners_with_cam = [m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice and m.voice.self_video]
-    is_running = periodic_menu_update.is_running()
-    if human_listeners_with_cam and (not is_running):
-        logger.info('Active user with camera detected. Starting periodic menu task.')
-        periodic_menu_update.start()
-    elif not human_listeners_with_cam and is_running:
-        logger.info('VC is empty of active users. Stopping periodic menu task.')
-        periodic_menu_update.stop()
+
+    # Get the running state of all relevant tasks
+    is_menu_task_running = periodic_menu_update.is_running()
+    is_screenshot_task_running = capture_screenshots_task.is_running()
+    is_ban_check_task_running = check_ban_status_task.is_running()
+    is_times_report_task_running = periodic_times_report_update.is_running()
+    is_timeouts_report_task_running = periodic_timeouts_report_update.is_running()
+
+    # --- STARTING LOGIC ---
+    # We should start (or keep running) tasks if:
+    # 1. There are human listeners OR
+    # 2. EMPTY_VC_PAUSE is False (meaning tasks should always run)
+    if human_listeners_with_cam or not bot_config.EMPTY_VC_PAUSE:
+        
+        log_reason = "Active user detected" if human_listeners_with_cam else "EMPTY_VC_PAUSE is False"
+
+        if not is_menu_task_running:
+            logger.info(f'Starting periodic menu task. ({log_reason})')
+            periodic_menu_update.start()
+        
+        if not is_screenshot_task_running:
+            logger.info(f'Starting screenshot capture task. ({log_reason})')
+            capture_screenshots_task.start()
+
+        if not is_ban_check_task_running:
+            logger.info(f'Starting ban check task. ({log_reason})')
+            check_ban_status_task.start()
+
+        if not is_times_report_task_running:
+            logger.info(f'Starting periodic times report task. ({log_reason})')
+            periodic_times_report_update.start()
+
+        if not is_timeouts_report_task_running:
+            logger.info(f'Starting periodic timeouts report task. ({log_reason})')
+            periodic_timeouts_report_update.start()
+
+    # --- STOPPING LOGIC ---
+    # We should stop tasks ONLY IF:
+    # 1. There are NO human listeners AND
+    # 2. EMPTY_VC_PAUSE is True
+    elif not human_listeners_with_cam and bot_config.EMPTY_VC_PAUSE:
+        
+        if is_menu_task_running:
+            logger.info('VC is empty. Stopping periodic menu task.')
+            periodic_menu_update.stop()
+        
+        if is_screenshot_task_running:
+            logger.info('VC is empty. Stopping screenshot capture task.')
+            capture_screenshots_task.stop()
+            # Also clear the screenshot buffer to save memory
+            async with state.screenshot_lock:
+                 if hasattr(state, "ban_screenshots"):
+                    state.ban_screenshots.clear()
+                    logger.info("Cleared in-memory screenshot buffer.")
+
+        if is_ban_check_task_running:
+            logger.info('VC is empty. Stopping ban check task.')
+            check_ban_status_task.stop()
+
+        if is_times_report_task_running:
+            logger.info('VC is empty. Stopping periodic times report task.')
+            periodic_times_report_update.stop()
+
+        if is_timeouts_report_task_running:
+            logger.info('VC is empty. Stopping periodic timeouts report task.')
+            periodic_timeouts_report_update.stop()
 async def init_vc_moderation():
     async with state.vc_lock:
         is_active = state.vc_moderation_active
@@ -967,9 +1059,6 @@ async def on_ready() -> None:
         if not auto_delete_old_commands.is_running():
             auto_delete_old_commands.start()
             logger.info('Auto-delete command task started.')
-        if not periodic_times_report_update.is_running():
-            periodic_times_report_update.start()
-            logger.info('Periodic times report update task started.')
         if not daily_auto_stats_clear.is_running():
             daily_auto_stats_clear.start()
             logger.info('Daily auto-stats task started.')
@@ -1164,14 +1253,32 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     await command_channel.send('Stream automatically started')
                 except Exception as e:
                     logger.error(f'Failed to send auto-skip notification: {e}')
+        
+        # --- THIS IS THE UPDATED BLOCK ---
         if bot_config.EMPTY_VC_PAUSE and cam_users_before_count > 0 and (cam_users_after_count == 0):
-            logger.info(f'Auto Refresh: Last camera user left/turned cam off. Before: {cam_users_before_count}, After: 0.')
-            await omegle_handler.refresh()
-            if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
-                try:
-                    await command_channel.send('Stream automatically paused')
-                except Exception as e:
-                    logger.error(f'Failed to send auto-refresh notification: {e}')
+            # This is the "last user left" trigger.
+            # We must check if the bot is already in a paused state.
+            # We use `state.relay_command_sent` as the flag:
+            #   - True:  A !skip has happened. The bot is "live". We need to pause.
+            #   - False: No !skip has happened. The bot is "already paused". Do nothing.
+            
+            is_bot_live = False # Assume paused
+            if state: # Check if state exists
+                async with state.moderation_lock:
+                    is_bot_live = state.relay_command_sent
+            
+            if is_bot_live:
+                logger.info(f'Auto Refresh: Last camera user left (Before: {cam_users_before_count}, After: 0). Bot is live, sending pause command.')
+                await omegle_handler.refresh()
+                if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
+                    try:
+                        await command_channel.send('Stream automatically paused')
+                    except Exception as e:
+                        logger.error(f'Failed to send auto-refresh notification: {e}')
+            else:
+                logger.info(f'Auto Refresh: Last camera user left (Before: {cam_users_before_count}, After: 0), but bot is already in a paused state. No refresh sent.')
+        # --- END OF UPDATED BLOCK ---
+
     if after.channel and after.channel.id == bot_config.PUNISHMENT_VC_ID:
         if member.voice and (member.voice.mute or member.voice.deaf):
             try:
@@ -1196,8 +1303,10 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
             if channel:
                 embed = await build_role_update_embed(after, roles_gained, roles_lost)
                 await channel.send(embed=embed)
+                
     if before.is_timed_out() != after.is_timed_out():
         if after.is_timed_out():
+            # This 'if' block runs when a timeout is ADDED
             async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
                 if entry.target.id == after.id and hasattr(entry.after, 'timed_out_until') and (entry.after.timed_out_until is not None):
                     duration = (entry.after.timed_out_until - datetime.now(timezone.utc)).total_seconds()
@@ -1208,32 +1317,35 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
                     asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
                     break
         else:
+            # This 'else' block runs when a timeout is REMOVED
             async with state.moderation_lock:
                 if after.id in state.pending_timeout_removals:
-                    return
+                    return  # Already processing this removal
                 state.pending_timeout_removals[after.id] = True
+            
             try:
                 moderator_name = 'System'
                 moderator_id = None
                 reason = 'Timeout Expired Naturally'
-                found_log = False
-                for _ in range(5):
-                    try:
-                        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update, after=datetime.now(timezone.utc) - timedelta(seconds=15)):
-                            if entry.target.id == after.id and getattr(entry.before, 'timed_out_until') is not None and (getattr(entry.after, 'timed_out_until') is None):
-                                moderator_name = entry.user.name
-                                moderator_id = entry.user.id
-                                reason = f'Manually removed by 🛡️ {moderator_name}'
-                                found_log = True
-                                break
-                        if found_log:
-                            break
-                    except discord.Forbidden:
-                        logger.warning('Cannot check audit logs for un-timeout (Missing Permissions).')
-                        break
-                    except Exception as e:
-                        logger.error(f'Error checking audit logs for un-timeout: {e}')
-                    await asyncio.sleep(1)
+
+                try:
+                    # THIS IS THE FIX: Wait 2s for the audit log to populate (for manual removals)
+                    await asyncio.sleep(2.0) 
+                    
+                    # Check the log ONCE (no loop)
+                    async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update, after=datetime.now(timezone.utc) - timedelta(seconds=15)):
+                        if entry.target.id == after.id and getattr(entry.before, 'timed_out_until') is not None and (getattr(entry.after, 'timed_out_until') is None):
+                            # Found a manual removal log
+                            moderator_name = entry.user.name
+                            moderator_id = entry.user.id
+                            reason = f'Manually removed by 🛡️ {moderator_name}'
+                            break 
+                except discord.Forbidden:
+                    logger.warning('Cannot check audit logs for un-timeout (Missing Permissions).')
+                except Exception as e:
+                    logger.error(f'Error checking audit logs for un-timeout: {e}')
+                
+                # Now update the state
                 async with state.moderation_lock:
                     start_timestamp = state.active_timeouts.get(after.id, {}).get('start_timestamp', time.time())
                     duration = int(time.time() - start_timestamp)
@@ -1241,9 +1353,18 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
                     if len(state.recent_untimeouts) > 100:
                         state.recent_untimeouts.pop(0)
                     state.active_timeouts.pop(after.id, None)
-                await helper.send_timeout_removal_notification(after, duration, reason)
-                asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
+                
+                # Try to send the notification, but don't stop if it fails
+                try:
+                    await helper.send_timeout_removal_notification(after, duration, reason)
+                except Exception as e:
+                    logger.error(f"Failed to send timeout removal notification for {after.name} (this is normal for natural expirations): {e}", exc_info=True)
+                
+                # This line will now be reached every time
+                asyncio.create_task(helper.update_timeouts_report_menu())
+            
             finally:
+                # Always remove the lock at the end
                 async with state.moderation_lock:
                     state.pending_timeout_removals.pop(after.id, None)
 
