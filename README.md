@@ -206,32 +206,32 @@ SS_LOCATION = 'screenshots'
 
 # --- PERMISSIONS ---
 ALLOWED_USERS = {123456789012345678, 987654321098765432} # User IDs with full bot access (Owner Commands)
-ADMIN_ROLE_NAME = ["Admin", "Moderator"] # Roles that can use Admin Commands
-MOVE_ROLE_NAME = ["Admin", "Mover"]           # Roles allowed to use the !move command (if not Allowed User)
+ADMIN_ROLE_NAME = ["Admin", "Moderator"]                 # Roles that can use Admin Commands
+MOVE_ROLE_NAME = ["Admin", "Mover"]                      # Roles allowed to use the !move command (if not Allowed User)
 
 # --- OPTIONAL FEATURES ---
-LOG_GC = None                        # Channel ID for bot status/error messages (e.g., online, VC connect fail)
-ALT_VC_ID = []                       # List of additional voice channel IDs to moderate (apply camera rules)
-AUTO_STATS_CHAN = 123456789012345678 # Channel for daily auto-stats reports & BAN SCREENSHOTS
-MEDIA_ONLY_CHANNEL_ID = None         # Channel where only media is allowed (automatically delete non-media messages)
-MOD_MEDIA = False                    # Enable/disable media-only channel moderation
-EMPTY_VC_PAUSE = True                # Auto-refresh (!pause) stream when VC becomes empty of camera users
-AUTO_VC_START = False                # Auto-skip (!start) stream when first camera user joins an empty VC
-AUTO_RELAY = False                   # Automatically send /relay to chat at start and after refresh then skip
+LOG_GC = None                           # Channel ID for bot status/error messages (e.g., online, VC connect fail)
+ALT_VC_ID = []                          # List of additional voice channel IDs to moderate (apply camera rules)
+AUTO_STATS_CHAN = 123456789012345678    # Channel for daily auto-stats reports & BAN SCREENSHOTS
+MEDIA_ONLY_CHANNEL_ID = None            # Channel where only media is allowed (automatically delete non-media messages)
+MOD_MEDIA = False                       # Enable/disable media-only channel moderation
+EMPTY_VC_PAUSE = True                   # Auto-refresh (!pause) stream when VC becomes empty of camera users
+AUTO_VC_START = False                   # Auto-skip (!start) stream when first camera user joins an empty VC
+AUTO_RELAY = False                      # Automatically send /relay to chat at start and after refresh then skip
 
 # Omegle Audio Automation
-AUTO_OMEGLE_VOL = False              # Automatically set the Omegle volume slider
-OMEGLE_VOL = 100                     # Volume (0-100) to set if AUTO_OMEGLE_VOL is True
+AUTO_OMEGLE_VOL = False                 # Automatically set the Omegle volume slider
+OMEGLE_VOL = 100                        # Volume (0-100) to set if AUTO_OMEGLE_VOL is True
 
 STATS_EXCLUDED_USERS = {123456789012345678} # User IDs to exclude from !times, !stats
 
 # --- TIMING & MESSAGES ---
-AUTO_STATS_HOUR_UTC = 5              # UTC hour for daily auto-stats post & clear (0-23)
-AUTO_STATS_MINUTE_UTC = 0            # UTC minute for daily auto-stats post & clear (0-59)
-COMMAND_COOLDOWN = 5                 # Seconds cooldown for regular/button commands
-CAMERA_OFF_ALLOWED_TIME = 30         # Seconds a user can have camera off before punishment
+AUTO_STATS_HOUR_UTC = 5                 # UTC hour for daily auto-stats post & clear (0-23)
+AUTO_STATS_MINUTE_UTC = 0               # UTC minute for daily auto-stats post & clear (0-59)
+COMMAND_COOLDOWN = 5                    # Seconds cooldown for regular/button commands
+CAMERA_OFF_ALLOWED_TIME = 30            # Seconds a user can have camera off before punishment
 TIMEOUT_DURATION_SECOND_VIOLATION = 60  # Seconds for 2nd camera violation timeout
-TIMEOUT_DURATION_THIRD_VIOLATION = 300 # Seconds for 3rd+ camera violation timeout
+TIMEOUT_DURATION_THIRD_VIOLATION = 300  # Seconds for 3rd+ camera violation timeout
 ```
 
 ## Running the Bot
