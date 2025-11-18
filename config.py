@@ -56,7 +56,7 @@ AUTO_VC_START = False
 # If True, the bot will automatically scan for / click check-boxs that appear after !refresh command is used or bot starts.
 CLICK_CHECKBOX = False
 
-# Set to True if you want the bot to automatically type /relay in the Omegle chat 
+# Set to True if you want the bot to automatically type /relay in the Omegle chat at first !skip after a !refresh.
 AUTO_RELAY = False
 
 # Set to True if you want the bot to automatically adjust the Omegle volume
@@ -191,6 +191,7 @@ GLOBAL_HOTKEY_MVOLDOWN = ""            # The key to trigger the !mvoldown. Uses 
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = ""              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
