@@ -77,7 +77,7 @@ def get_display_title_from_path(song_path: str) -> str:
         elif raw_title:
             return raw_title
     return os.path.basename(song_path)
-@tasks.loop(minutes=59)
+@tasks.loop(minutes=57.31)
 async def periodic_cleanup():
     try:
         await state.clean_old_entries()
@@ -124,10 +124,10 @@ async def load_state_async() -> None:
         helper.state = state
         omegle_handler.state = state
 helper = BotHelper(bot, state, bot_config, save_state_async, lambda: asyncio.create_task(play_next_song()), omegle_handler=omegle_handler, update_menu_func=lambda: asyncio.create_task(update_music_menu()), trigger_repost_func=lambda: asyncio.create_task(_trigger_full_menu_repost()))
-@tasks.loop(minutes=14)
+@tasks.loop(minutes=15.33)
 async def periodic_state_save() -> None:
     await save_state_async()
-@tasks.loop(minutes=7)
+@tasks.loop(minutes=17.77)
 async def periodic_geometry_save():
     if omegle_handler:
         geometry = await omegle_handler.get_window_geometry()
@@ -202,7 +202,7 @@ async def auto_delete_old_commands():
 @auto_delete_old_commands.before_loop
 async def before_auto_delete_old_commands():
     await bot.wait_until_ready()
-@tasks.loop(minutes=10)
+@tasks.loop(minutes=9.33)
 async def periodic_times_report_update():
     if not hasattr(state, 'times_report_message_id') or not state.times_report_message_id:
         return
@@ -228,7 +228,7 @@ async def periodic_times_report_update():
 async def before_periodic_times_report_update():
     await bot.wait_until_ready()
 
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=1.37)
 async def periodic_timeouts_report_update():
     # This helper function already contains all necessary logic:
     # 1. Checks if state.timeouts_report_message_id exists.
@@ -1434,7 +1434,7 @@ async def _trigger_full_menu_repost():
             logger.info('Successfully completed triggered full menu repost.')
         except Exception as e:
             logger.error(f'Error during triggered menu repost: {e}', exc_info=True)
-@tasks.loop(minutes=721)
+@tasks.loop(minutes=721.17)
 async def periodic_menu_update() -> None:
     if state.menu_repost_lock.locked():
         logger.info('Periodic menu update skipped: Repost lock is currently held.')
