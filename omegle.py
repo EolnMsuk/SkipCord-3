@@ -662,50 +662,64 @@ class OmegleHandler:
     @require_healthy_driver
     async def custom_skip(self, ctx: Optional[commands.Context] = None) -> bool:
         """
-        Performs the 'skip' action with Ban checks at the start and end.
+        Performs the 'skip' action.
+        If on a /ban/ page, attempts to navigate to the stream.
+        If successful, unbans the state and proceeds.
         """
-        # --- BAN CHECK (START) ---
+        # Get current URL to determine status
         current_url = await asyncio.to_thread(lambda: self.driver.current_url)
-        if "/ban/" in current_url:
-            logger.warning("Ban detected at start of skip command. Triggering ban handler.")
-            await self.check_for_ban()  # Run the standard ban logic
-            return False  # Stop the command
-        # -------------------------
+        is_ban_page = "/ban/" in current_url
 
-        # Check if we're on the wrong page
+        # Condition: Not on Video URL (covers Redirects AND Bans)
         if self.config.OMEGLE_VIDEO_URL not in current_url:
             logger.warning(
-                f"URL Mismatch: Not on video page (Currently at: {current_url}). Redirecting before skip."
+                f"URL Mismatch (Ban={is_ban_page}): Currently at {current_url}. Attempting to navigate..."
             )
             if ctx:
-                await ctx.send(
-                    "Browser is on the wrong page. Redirecting to the stream now...",
-                    delete_after=10,
-                )
+                msg = "Attempting to resolve ban/redirect..." if is_ban_page else "Redirecting to stream..."
+                await ctx.send(msg, delete_after=10)
             
-            # 1. Navigate
+            # 1. Navigate to the correct URL
             await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
 
-            # --- RELAY FIX: Reset state on new page load ---
+            # --- STATE RESET ---
             if self.state:
                 async with self.state.moderation_lock:
                     self.state.relay_command_sent = False
-            # -----------------------------------------------
-            
-            # 2. Wait (Full 'Start-up' wait)
+            # -------------------
+
+            # 2. Verify Navigation (Did we escape the ban?)
+            if is_ban_page:
+                # Allow time for a potential redirect back to /ban/
+                await asyncio.sleep(2.5)
+                check_url = await asyncio.to_thread(lambda: self.driver.current_url)
+                
+                if "/ban/" in check_url:
+                    logger.warning("Navigation failed. Still stuck on /ban/ page.")
+                    # Force a ban check to ensure logs/screenshots are up to date
+                    await self.check_for_ban() 
+                    return False # Stop the command here
+                else:
+                    logger.info("Navigation successful. Ban appears to be lifted.")
+                    # UPDATE STATE: Unban the bot
+                    if self.state:
+                        async with self.state.moderation_lock:
+                            self.state.is_banned = False
+
+            # 3. Wait (Full 'Start-up' wait)
             logger.info("Navigated to Video URL. Waiting 5.3s for page load/challenges...")
             await asyncio.sleep(5.3)
 
-            # 3. Check for Checkboxes
+            # 4. Check for Checkboxes
             if self.config.CLICK_CHECKBOX:
                 logger.info("Checking for checkboxes (Cloudflare/ToS) after navigation...")
                 await self.find_and_click_checkbox()
                 
-                # --- 4. ADDED DELAY: Post-Checkbox Wait ---
+                # 5. Post-Checkbox Wait
                 logger.info("Finished checkbox check. Waiting 5.3s before skipping...")
                 await asyncio.sleep(5.3)
 
-        # Get skip keys from config, default to ['Escape', 'Escape']
+        # Get skip keys from config
         keys = getattr(config, "SKIP_COMMAND_KEY", None)
         if not keys:
             keys = ["Escape", "Escape"]
@@ -714,10 +728,9 @@ class OmegleHandler:
 
         # Send key presses
         skip_successful = False
-        for attempt in range(3):  # Retry loop for stale elements
+        for attempt in range(3):
             try:
                 for i, key in enumerate(keys):
-                    # Execute JS to simulate a keydown event
                     script = f"""
                     var evt = new KeyboardEvent('keydown', {{
                         bubbles: true, cancelable: true, key: '{key}', code: '{key}'
@@ -727,13 +740,11 @@ class OmegleHandler:
                     await asyncio.to_thread(self.driver.execute_script, script)
                     logger.info(f"Selenium: Sent {key} key event to page.")
                     if i < len(keys) - 1:
-                        await asyncio.sleep(1)  # Pause between keys if multiple
+                        await asyncio.sleep(1)
                 skip_successful = True
-                break  # Success, exit retry loop
+                break
             except StaleElementReferenceException:
-                logger.warning(
-                    f"StaleElementReferenceException on skip attempt {attempt + 1}. Retrying..."
-                )
+                logger.warning(f"StaleElementReferenceException on skip attempt {attempt + 1}. Retrying...")
                 await asyncio.sleep(0.5)
                 continue
             except Exception as e:
@@ -743,11 +754,8 @@ class OmegleHandler:
                 skip_successful = False
                 break
 
-        if not skip_successful:
-            logger.error("Failed to execute custom skip. Will still attempt volume/relay.")
-
         # --- BAN CHECK (END) ---
-        # Check URL again before trying to relay
+        # Check URL again before trying to relay, just in case skip triggered a ban
         final_url = await asyncio.to_thread(lambda: self.driver.current_url)
         if "/ban/" in final_url:
             logger.warning("Ban detected at end of skip command. Triggering ban handler.")
@@ -765,26 +773,20 @@ class OmegleHandler:
         ctx: Optional[Union[commands.Context, discord.Message, discord.Interaction]] = None,
     ) -> bool:
         """
-        Refreshes the browser page with Ban checks at start and end.
+        Refreshes the browser page.
+        If on a /ban/ page, attempts to navigate to the stream first.
         """
-        # --- BAN CHECK (START) ---
-        current_url = await asyncio.to_thread(lambda: self.driver.current_url)
-        if "/ban/" in current_url:
-            logger.warning("Ban detected at start of refresh command. Triggering ban handler.")
-            await self.check_for_ban()
-            return False
-        # -------------------------
-
         # --- 1. URL Check & Navigation ---
-        # This block ensures we are on the correct page BEFORE checking checkboxes.
         try:
-            # If the config URL is NOT in the current URL, force a navigation first
+            current_url = await asyncio.to_thread(lambda: self.driver.current_url)
+            is_ban_page = "/ban/" in current_url
+            
+            # Condition: Not on Video URL (Redirects or Bans)
             if self.config.OMEGLE_VIDEO_URL not in current_url:
                 logger.warning(
-                    f"URL Mismatch during Refresh: Not on video page (Currently at: {current_url}). Redirecting..."
+                    f"URL Mismatch during Refresh (Ban={is_ban_page}). currently at {current_url}. Redirecting..."
                 )
                 
-                # Notify user if applicable
                 if ctx:
                     msg_content = "Browser is on the wrong page. Redirecting to the stream now..."
                     if isinstance(ctx, discord.Interaction):
@@ -797,7 +799,24 @@ class OmegleHandler:
                 
                 # Navigate to the correct URL
                 await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
-                await asyncio.sleep(2.0) # Wait for load before refreshing
+                
+                # If it was a ban, verify we actually left
+                if is_ban_page:
+                    await asyncio.sleep(2.5)
+                    check_url = await asyncio.to_thread(lambda: self.driver.current_url)
+                    if "/ban/" in check_url:
+                        logger.warning("Refresh failed: Still stuck on /ban/ page.")
+                        await self.check_for_ban()
+                        return False
+                    else:
+                        # Unbanned!
+                        logger.info("Navigation successful during refresh. Ban appears lifted.")
+                        if self.state:
+                            async with self.state.moderation_lock:
+                                self.state.is_banned = False
+                else:
+                    # Normal redirect wait
+                    await asyncio.sleep(2.0) 
 
         except Exception as e:
             logger.error(f"Error checking/navigating URL in refresh: {e}")
@@ -807,7 +826,7 @@ class OmegleHandler:
             if ctx is not None:
                 logger.info("Selenium: Attempting to refresh the page (F5) via user command.")
             else:
-                logger.info("Selenium: Attempting to refresh the page (F5) via automated process (startup/pause).")
+                logger.info("Selenium: Attempting to refresh the page (F5) via automated process.")
             
             # Run the F5 Refresh
             await asyncio.to_thread(self.driver.refresh)
@@ -829,7 +848,7 @@ class OmegleHandler:
                     )
                 else:
                     logger.info(
-                        "Automated refresh (e.g., startup/auto-pause). Waiting 5.3s to click checkboxes..."
+                        "Automated refresh. Waiting 5.3s to click checkboxes..."
                     )
                 
                 await asyncio.sleep(5.3)
