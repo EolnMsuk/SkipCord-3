@@ -662,13 +662,17 @@ class OmegleHandler:
     @require_healthy_driver
     async def custom_skip(self, ctx: Optional[commands.Context] = None) -> bool:
         """
-        Performs the 'skip' action by sending 'Escape' key presses.
-        
-        If the bot is on the wrong URL (e.g. after auto-pause or redirect),
-        it navigates back, waits 5.3s, checks checkboxes, waits ANOTHER 5.3s, and THEN skips.
+        Performs the 'skip' action with Ban checks at the start and end.
         """
-        # Check if we're on the wrong page
+        # --- BAN CHECK (START) ---
         current_url = await asyncio.to_thread(lambda: self.driver.current_url)
+        if "/ban/" in current_url:
+            logger.warning("Ban detected at start of skip command. Triggering ban handler.")
+            await self.check_for_ban()  # Run the standard ban logic
+            return False  # Stop the command
+        # -------------------------
+
+        # Check if we're on the wrong page
         if self.config.OMEGLE_VIDEO_URL not in current_url:
             logger.warning(
                 f"URL Mismatch: Not on video page (Currently at: {current_url}). Redirecting before skip."
@@ -681,6 +685,12 @@ class OmegleHandler:
             
             # 1. Navigate
             await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
+
+            # --- RELAY FIX: Reset state on new page load ---
+            if self.state:
+                async with self.state.moderation_lock:
+                    self.state.relay_command_sent = False
+            # -----------------------------------------------
             
             # 2. Wait (Full 'Start-up' wait)
             logger.info("Navigated to Video URL. Waiting 5.3s for page load/challenges...")
@@ -736,7 +746,16 @@ class OmegleHandler:
         if not skip_successful:
             logger.error("Failed to execute custom skip. Will still attempt volume/relay.")
 
-        # Always attempt to send /relay after a skip
+        # --- BAN CHECK (END) ---
+        # Check URL again before trying to relay
+        final_url = await asyncio.to_thread(lambda: self.driver.current_url)
+        if "/ban/" in final_url:
+            logger.warning("Ban detected at end of skip command. Triggering ban handler.")
+            await self.check_for_ban()
+            return False
+        # -----------------------
+
+        # Always attempt to send /relay after a skip (if not banned)
         await self._attempt_send_relay()
         return skip_successful
 
@@ -746,16 +765,19 @@ class OmegleHandler:
         ctx: Optional[Union[commands.Context, discord.Message, discord.Interaction]] = None,
     ) -> bool:
         """
-        Refreshes the browser page.
-
-        Ensures the bot is on the correct Video URL first, then performs an F5 refresh,
-        and finally handles checkbox clicking.
+        Refreshes the browser page with Ban checks at start and end.
         """
+        # --- BAN CHECK (START) ---
+        current_url = await asyncio.to_thread(lambda: self.driver.current_url)
+        if "/ban/" in current_url:
+            logger.warning("Ban detected at start of refresh command. Triggering ban handler.")
+            await self.check_for_ban()
+            return False
+        # -------------------------
+
         # --- 1. URL Check & Navigation ---
         # This block ensures we are on the correct page BEFORE checking checkboxes.
         try:
-            current_url = await asyncio.to_thread(lambda: self.driver.current_url)
-            
             # If the config URL is NOT in the current URL, force a navigation first
             if self.config.OMEGLE_VIDEO_URL not in current_url:
                 logger.warning(
@@ -824,6 +846,14 @@ class OmegleHandler:
                 logger.info(
                     "Refresh complete. CLICK_CHECKBOX is False. Skipping checkbox click."
                 )
+
+            # --- BAN CHECK (END) ---
+            final_url = await asyncio.to_thread(lambda: self.driver.current_url)
+            if "/ban/" in final_url:
+                logger.warning("Ban detected at end of refresh command. Triggering ban handler.")
+                await self.check_for_ban()
+                return False
+            # -----------------------
 
             return True
         except Exception as e:
