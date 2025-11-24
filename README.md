@@ -30,7 +30,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Leave Batching**: To reduce spam, "Member Left" notifications are now batched. Alerts are sent to the log channel *only* if the user had roles; otherwise, they are grouped into a summary.
   * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time/usage statistics.
 
-<img width="1285" height="894" alt="console" src="https://github.com/user-attachments/assets/c75a454e-9fc1-45c1-8f94-c2686d61f43f" />
+<img width="1398" height="1054" alt="console" src="https://github.com/user-attachments/assets/3769c9ba-ce6d-4884-a2be-1386f203ddfd" />
 
 ### 🎵 Integrated Music System
 
