@@ -118,6 +118,9 @@ COMMAND_COOLDOWN = 5
 # How long (in seconds) a user can have their camera off in a moderated VC before punishment.
 CAMERA_OFF_ALLOWED_TIME = 30
 
+# Add this under the Moderation section
+DEAFEN_ALLOWED_TIME = 120  # Seconds a user can be self-deafened before punishment
+
 # The timeout duration (in seconds) for a user's SECOND camera-off violation.
 TIMEOUT_DURATION_SECOND_VIOLATION = 60      # 1 minute
 
@@ -195,6 +198,7 @@ GLOBAL_HOTKEY_MVOLDOWN = ""            # The key to trigger the !mvoldown. Uses 
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = ""              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
