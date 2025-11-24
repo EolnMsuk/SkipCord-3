@@ -24,10 +24,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 
   * **Camera & Deafen Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs. **New in v3.7:** Now also tracks and punishes users who remain **self-deafened** for longer than the allowed time (default 300s).
   * **Persistent Moderation Report**: The `🛡️ Moderation Status 🛡️` menu updates in real-time (and persists through restarts) to show active timeouts, command-disabled users, and a log of recent manual untimeouts—identifying **exactly which moderator** removed a timeout.
-  * **Deep Audit Logging**: The bot fetches deep audit logs (limit 20) to ensure kicks, bans, and timeouts are never missed in high-traffic servers.
-  * **`!move` Command**: Admins or designated roles can move users from the Streaming VC to the Punishment VC (e.g., for sleeping), with automatic notifications.
   * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the screenshots locally, **posts them to a Discord channel**, and logs details to a dedicated `ban.log`.
-  * **Leave Batching**: To reduce spam, "Member Left" notifications are now batched. Alerts are sent to the log channel *only* if the user had roles; otherwise, they are grouped into a summary.
   * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time/usage statistics.
 
 <img width="1398" height="1054" alt="console" src="https://github.com/user-attachments/assets/3769c9ba-ce6d-4884-a2be-1386f203ddfd" />
@@ -35,7 +32,6 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 ### 🎵 Integrated Music System
 
   * **Versatile Playback**: Search/play songs from **YouTube** / **Spotify** / local files.
-  * **Improved Stability**: Uses `yt_dlp` to extract direct stream URLs before processing. **New in v3.7:** Added a retry limit (max 5) to prevent infinite error loops and recursion stack overflows when encountering broken links.
   * **Role-Based Access**: Optionally restrict music control to specific roles using the `MUSIC_ROLES` configuration.
   * **Spotify Limits**: To prevent queue flooding, Spotify playlist loading is capped at 100 tracks per request.
   * **Interactive Queue**: View the song queue with `!q` and instantly jump to any song using a dropdown menu.
