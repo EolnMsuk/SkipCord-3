@@ -20,14 +20,12 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 
   <img width="438" height="985" alt="menus" src="https://github.com/user-attachments/assets/436c458a-f9f4-40fe-a44b-66a48abb9aa5" />
 
-### 🛡️ Advanced Moderation & Automation
+### 🔔 Notification System
 
-  * **Camera & Deafen Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs. **New in v3.7:** Now also tracks and punishes users who remain **self-deafened** for longer than the allowed time (default 300s).
-  * **Persistent Moderation Report**: The `🛡️ Moderation Status 🛡️` menu updates in real-time (and persists through restarts) to show active timeouts, command-disabled users, and a log of recent manual untimeouts—identifying **exactly which moderator** removed a timeout.
-  * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the screenshots locally, **posts them to a Discord channel**, and logs details to a dedicated `ban.log`.
-  * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time/usage statistics.
-
-<img width="1398" height="1054" alt="console" src="https://github.com/user-attachments/assets/3769c9ba-ce6d-4884-a2be-1386f203ddfd" />
+* **Smart Leave Batching**: Consolidates mass departures into single summaries to prevent chat spam, automatically highlighting users with roles.
+* **Rich Moderation Logs**: Real-time, color-coded embeds for bans, kicks, timeouts, and Punishment VC moves, fetching reason and moderator details automatically from the audit logs.
+* **New Member Intel**: Join alerts include account creation dates to instantly spot potential alt accounts.
+* **Easy Toggles**: Enable or disable event logging instantly with `!enablenotifications` / `!disablenotifications`.
 
 ### 🎵 Integrated Music System
 
@@ -37,6 +35,15 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Interactive Queue**: View the song queue with `!q` and instantly jump to any song using a dropdown menu.
   * **Persistent Playlists**: Save/Load/Delete named playlists.
   * **Watchdog**: Ensures music playback automatically resumes if it stalls while listeners are present.
+
+### 🛡️ Advanced Moderation & Automation
+
+  * **Camera & Deafen Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs. **New in v3.7:** Now also tracks and punishes users who remain **self-deafened** for longer than the allowed time (default 300s).
+  * **Persistent Moderation Report**: The `🛡️ Moderation Status 🛡️` menu updates in real-time (and persists through restarts) to show active timeouts, command-disabled users, and a log of recent manual untimeouts—identifying **exactly which moderator** removed a timeout.
+  * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the screenshots locally, **posts them to a Discord channel**, and logs details to a dedicated `ban.log`.
+  * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time/usage statistics.
+
+<img width="1398" height="1054" alt="console" src="https://github.com/user-attachments/assets/3769c9ba-ce6d-4884-a2be-1386f203ddfd" />
 
 ### 📊 Persistent State & Analytics
 
