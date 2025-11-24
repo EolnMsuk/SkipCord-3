@@ -1,4 +1,4 @@
-# SkipCord-3.6: A Discord / Omegle / Music Bot
+# SkipCord-3.7: A Discord / Omegle / Music Bot
 
 SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels who want to use Omegle or similar platforms as a group. It seamlessly integrates a shared streaming experience into a Discord voice channel, empowering the audience with control through an autonomous, interactive button menu. The bot features advanced moderation, detailed logging, automated rule enforcement, and a complete music system, all built on a fully asynchronous architecture for rock-solid performance.
 
@@ -12,8 +12,8 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 ### 🌐 Interactive Stream Control
 
   * **Intuitive Button Menus**: Users control the stream (`!skip` ⏭️, `!refresh` 🔄, `!rules` ℹ️) and music (`!mskip`, `!mpauseplay`, `!mclear`) with persistent button menus. Requires being in the Streaming VC with camera on for most actions.
-  * **Cloudflare & Security Bypass**: Version 3.6 includes advanced logic to detect and click "Verify you are human" (Cloudflare/Turnstile) checkboxes inside iframes, ensuring the stream recovers automatically after refreshes.
-  * **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine.
+  * **Cloudflare & Security Bypass**: Includes advanced logic to detect and click "Verify you are human" (Cloudflare/Turnstile) checkboxes inside iframes, ensuring the stream recovers automatically after refreshes.
+  * **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine. *Version 3.7 adds connection safety checks to prevent crashes if hotkeys are pressed while disconnected.*
   * **Auto-Start**: Automatically starts the stream by running `!skip` as soon as the first user joins the streaming VC with their camera on (configurable).
   * **Smart Auto-Pause & Graceful Shutdown**: Triggers a refresh *only* when the last user leaves. Includes a **14-second grace period** prevents the bot from rapidly toggling security tasks if a user rejoins quickly.
   * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
@@ -22,11 +22,11 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 
 ### 🛡️ Advanced Moderation & Automation
 
-  * **Camera Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs and applies escalating punishments for repeat violations.
-  * **Persistent Moderation Report**: The `🛡️ Moderation Status 🛡️` menu updates in real-time (and persists through restarts) to show active timeouts, command-disabled users, and a log of recent manual untimeouts—now identifying **exactly which moderator** removed a timeout.
-  * **Deep Audit Logging**: The bot now fetches deeper audit logs (limit increased to 20) to ensure kicks and bans are never missed in high-traffic servers.
+  * **Camera & Deafen Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs. **New in v3.7:** Now also tracks and punishes users who remain **self-deafened** for longer than the allowed time (default 300s).
+  * **Persistent Moderation Report**: The `🛡️ Moderation Status 🛡️` menu updates in real-time (and persists through restarts) to show active timeouts, command-disabled users, and a log of recent manual untimeouts—identifying **exactly which moderator** removed a timeout.
+  * **Deep Audit Logging**: The bot fetches deep audit logs (limit 20) to ensure kicks, bans, and timeouts are never missed in high-traffic servers.
   * **`!move` Command**: Admins or designated roles can move users from the Streaming VC to the Punishment VC (e.g., for sleeping), with automatic notifications.
-  * **Automatic Ban Handling**: Periodically captures browser screenshots (now using fixed base64 decoding for reliability). When a ban is detected, it saves the screenshots locally, **posts them to a Discord channel**, and logs details to a dedicated `ban.log`.
+  * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the screenshots locally, **posts them to a Discord channel**, and logs details to a dedicated `ban.log`.
   * **Leave Batching**: To reduce spam, "Member Left" notifications are now batched. Alerts are sent to the log channel *only* if the user had roles; otherwise, they are grouped into a summary.
   * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time/usage statistics.
 
@@ -35,7 +35,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 ### 🎵 Integrated Music System
 
   * **Versatile Playback**: Search/play songs from **YouTube** / **Spotify** / local files.
-  * **Improved Reliability**: Now uses `yt_dlp` to extract direct stream URLs before processing, significantly reducing playback errors on streams. Includes a race-condition fix for connection errors.
+  * **Improved Stability**: Uses `yt_dlp` to extract direct stream URLs before processing. **New in v3.7:** Added a retry limit (max 5) to prevent infinite error loops and recursion stack overflows when encountering broken links.
   * **Role-Based Access**: Optionally restrict music control to specific roles using the `MUSIC_ROLES` configuration.
   * **Spotify Limits**: To prevent queue flooding, Spotify playlist loading is capped at 100 tracks per request.
   * **Interactive Queue**: View the song queue with `!q` and instantly jump to any song using a dropdown menu.
@@ -83,7 +83,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 
 *(No channel or VC restrictions)*
 
-* `!mshuffle` - Cycles music mode (Shuffle -> Alphabetical -> Loop). *Restricted to Owners in v3.6.*
+* `!mshuffle` - Cycles music mode (Shuffle -> Alphabetical -> Loop).
 * `!purge <count>` - Purges a specified number of messages.
 * `!help` - Sends the interactive help menu with buttons.
 * `!music` - Sends the interactive music control menu.
@@ -204,6 +204,7 @@ AUTO_STATS_HOUR_UTC = 5                 # UTC hour for daily stats
 AUTO_STATS_MINUTE_UTC = 0               # UTC minute for daily stats
 COMMAND_COOLDOWN = 5                    # Button cooldown
 CAMERA_OFF_ALLOWED_TIME = 30            # Seconds allowed without camera
+DEAFEN_ALLOWED_TIME = 300               # Seconds allowed self-deafened before punishment
 TIMEOUT_DURATION_SECOND_VIOLATION = 60
 TIMEOUT_DURATION_THIRD_VIOLATION = 300
 ```
@@ -221,7 +222,7 @@ TIMEOUT_DURATION_THIRD_VIOLATION = 300
   * **Token Error**: Ensure `.env` is named correctly and contains no spaces around the token.
   * **Edge Won't Launch**: Close all background Edge processes. Verify `EDGE_USER_DATA_DIR` path uses forward slashes `/`.
   * **Music Fails**: Ensure **FFmpeg** and **Deno** are in your system PATH.
-  * **Spotify Links**: Check Client ID/Secret in `.env`. Note that playlists are limited to 100 tracks in v3.6.
+  * **Spotify Links**: Check Client ID/Secret in `.env`. Note that playlists are limited to 100 tracks.
   * **VC Errors**: Check the `LOG_GC` channel. Ensure the bot has "Connect" and "Speak" permissions.
 
 ### Donations
