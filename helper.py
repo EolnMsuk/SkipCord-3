@@ -38,7 +38,7 @@ def create_message_chunks(
     title: str,
     process_entry: Callable[[Any], str],
     max_chunk_size: int = 50,
-    max_length: int = 4000,
+    max_length: Optional[int] = None,  # Changed from 4000 to None for dynamic defaulting
     as_embed: bool = False,
     embed_color: Optional[discord.Color] = None,
 ) -> Union[List[str], List[discord.Embed]]:
@@ -51,7 +51,7 @@ def create_message_chunks(
         title: The title for the message/embed.
         process_entry: A function that converts an entry into a string.
         max_chunk_size: The maximum number of entries per chunk.
-        max_length: The maximum character length per chunk.
+        max_length: The maximum character length per chunk. Defaults to 2000 (text) or 4096 (embed).
         as_embed: If True, returns a list of embeds.
         embed_color: Required color if as_embed is True.
 
@@ -61,9 +61,14 @@ def create_message_chunks(
     if as_embed and embed_color is None:
         raise ValueError("embed_color must be provided when as_embed=True")
 
+    # --- FIX: Set safe defaults based on message type ---
+    if max_length is None:
+        max_length = 4096 if as_embed else 2000
+
     chunks = []
     current_chunk = []
     current_length = 0
+    # Calculate title overhead if not using embeds (embed titles don't count towards description limit)
     title_length = 0 if as_embed else len(f"**{title} ({len(entries)} total)**\n")
 
     for entry in entries:
@@ -75,10 +80,14 @@ def create_message_chunks(
         for processed in processed_list:
             if processed:
                 entry_length = len(processed) + 1  # +1 for the newline
-                # Check if adding this line exceeds limits
+                
+                # Check if adding this line exceeds limits (length or item count)
+                # We factor in title_length only for the first chunk of a non-embed message if needed,
+                # but generally, simpler logic is safer: just check current_length vs max.
                 if (
                     current_length + entry_length > max_length and current_chunk
                 ) or len(current_chunk) >= max_chunk_size:
+                    
                     # Finalize the current chunk
                     if as_embed:
                         embed = discord.Embed(
@@ -124,15 +133,15 @@ async def _button_callback_handler(
 ) -> None:
     """
     Central handler for all button presses from the static menus.
-    This function reproduces all the checks from a normal command
-    (cooldowns, permissions, camera status) before executing the action.
-
-    Args:
-        interaction: The discord.Interaction from the button press.
-        command: The command string (e.g., "!skip") to execute.
-        helper: The BotHelper instance containing state and config.
+    Updated to defer immediately to prevent interaction timeouts.
     """
     try:
+        # --- SOLUTION: Defer Immediately ---
+        # We defer ephemerally right away. This gives the bot 15 minutes to process
+        # instead of the standard 3 seconds, preventing "Unknown Interaction" errors.
+        await interaction.response.defer(ephemeral=True)
+        # -----------------------------------
+
         user_id = interaction.user.id
         user_member = interaction.user
         bot_config = helper.bot_config
@@ -141,16 +150,10 @@ async def _button_callback_handler(
         # --- Check 1: Command Disabled ---
         async with state.moderation_lock:
             if user_id in state.omegle_disabled_users:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "You are currently disabled from using any commands.",
-                        ephemeral=True,
-                    )
-                else:
-                    await interaction.followup.send(
-                        "You are currently disabled from using any commands.",
-                        ephemeral=True,
-                    )
+                await interaction.followup.send(
+                    "You are currently disabled from using any commands.",
+                    ephemeral=True,
+                )
                 logger.warning(
                     f"Blocked disabled user {interaction.user.name} from using button command {command}."
                 )
@@ -161,20 +164,13 @@ async def _button_callback_handler(
             user_id not in bot_config.ALLOWED_USERS
             and interaction.channel.id != bot_config.COMMAND_CHANNEL_ID
         ):
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(
-                    f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>",
-                    ephemeral=True,
-                )
+            await interaction.followup.send(
+                f"All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>",
+                ephemeral=True,
+            )
             return
-# --- NEW: Permission Checks for Restricted Commands ---
-        
-        # 1. !report (Admin Only)
+
+        # --- Check 2.5: Restricted Commands (Report/Shuffle) ---
         if command == "!report":
             is_allowed = user_id in bot_config.ALLOWED_USERS
             is_admin_role = False
@@ -182,44 +178,24 @@ async def _button_callback_handler(
                 is_admin_role = any(role.name in bot_config.ADMIN_ROLE_NAME for role in user_member.roles)
             
             if not (is_allowed or is_admin_role):
-                msg = "⛔ You do not have permission to use this button."
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(msg, ephemeral=True)
-                else:
-                    await interaction.followup.send(msg, ephemeral=True)
+                await interaction.followup.send("⛔ You do not have permission to use this button.", ephemeral=True)
                 return
 
-        # 2. !mshuffle (Owner Only)
         if command == "!mshuffle":
             if user_id not in bot_config.ALLOWED_USERS:
-                msg = "⛔ This button is restricted to Bot Owners."
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(msg, ephemeral=True)
-                else:
-                    await interaction.followup.send(msg, ephemeral=True)
+                await interaction.followup.send("⛔ This button is restricted to Bot Owners.", ephemeral=True)
                 return
-
-        # --- Check 3: Camera On (if required) ---
-        # (Existing code continues here...)
 
         # --- Check 3: Camera On (if required) ---
         if user_id not in bot_config.ALLOWED_USERS:
             camera_required_commands = [
-                "!skip",
-                "!refresh",
-                "!report",
-                "!rules",
-                "!mpauseplay",
-                "!mskip",
-                "!mshuffle",
-                "!mclear",
+                "!skip", "!refresh", "!report", "!rules",
+                "!mpauseplay", "!mskip", "!mshuffle", "!mclear",
             ]
             if command in camera_required_commands:
                 is_in_vc_with_cam = False
                 if isinstance(user_member, discord.Member):
-                    streaming_vc = user_member.guild.get_channel(
-                        bot_config.STREAMING_VC_ID
-                    )
+                    streaming_vc = user_member.guild.get_channel(bot_config.STREAMING_VC_ID)
                     is_in_vc_with_cam = bool(
                         streaming_vc
                         and user_member in streaming_vc.members
@@ -227,25 +203,22 @@ async def _button_callback_handler(
                         and user_member.voice.self_video
                     )
                 if not is_in_vc_with_cam:
-                    msg = "You must be in the Streaming VC with your camera on to use this button."
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(msg, ephemeral=True)
-                    else:
-                        await interaction.followup.send(msg, ephemeral=True)
+                    await interaction.followup.send(
+                        "You must be in the Streaming VC with your camera on to use this button.", 
+                        ephemeral=True
+                    )
                     return
 
-            # --- NEW: Check 3.5: Music Roles (for Music Buttons) ---
+            # --- Check 3.5: Music Roles ---
             music_commands = ["!mpauseplay", "!mskip", "!mshuffle", "!mclear"]
             if command in music_commands and bot_config.MUSIC_ROLES:
                 user_roles = [r.name for r in user_member.roles]
                 if not any(role in user_roles for role in bot_config.MUSIC_ROLES):
                     roles_str = ", ".join(bot_config.MUSIC_ROLES)
-                    msg = f"⛔ You need one of the following roles to control music: **{roles_str}**"
-                    
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(msg, ephemeral=True)
-                    else:
-                        await interaction.followup.send(msg, ephemeral=True)
+                    await interaction.followup.send(
+                        f"⛔ You need one of the following roles to control music: **{roles_str}**", 
+                        ephemeral=True
+                    )
                     return
 
         current_time = time.time()
@@ -257,23 +230,8 @@ async def _button_callback_handler(
                 time_since_last_cmd = current_time - state.last_omegle_command_time
                 if time_since_last_cmd < 5.0:
                     msg = f"An Omegle command was used globally. Please wait {5.0 - time_since_last_cmd:.1f}s."
-                    if not interaction.response.is_done():
-                        try:
-                            # Need to defer an ephemeral response first
-                            await interaction.response.defer(
-                                ephemeral=True, thinking=False
-                            )
-                            await interaction.followup.send(msg, ephemeral=True)
-                        except discord.InteractionResponded:
-                            # In case of race condition, just send followup
-                            await interaction.followup.send(msg, ephemeral=True)
-                    else:
-                        await interaction.followup.send(msg, ephemeral=True)
-                    logger.warning(
-                        f"Blocked {interaction.user.name} from button {command} due to global cooldown."
-                    )
+                    await interaction.followup.send(msg, ephemeral=True)
                     return
-                # Set the new global cooldown time
                 state.last_omegle_command_time = current_time
 
         # --- Check 5: Per-User Button Cooldown ---
@@ -283,71 +241,36 @@ async def _button_callback_handler(
                 time_left = bot_config.COMMAND_COOLDOWN - (current_time - last_used)
                 if time_left > 0:
                     if not warned:
-                        # Send warning on first spam attempt
-                        if not interaction.response.is_done():
-                            await interaction.response.send_message(
-                                f"{interaction.user.mention}, wait {int(time_left)}s before using another button.",
-                                ephemeral=True,
-                            )
-                        else:
-                            await interaction.followup.send(
-                                f"{interaction.user.mention}, wait {int(time_left)}s before using another button.",
-                                ephemeral=True,
-                            )
-                        state.button_cooldowns[user_id] = (last_used, True)  # Mark as warned
-                    elif not interaction.response.is_done():
-                        # Silently defer subsequent spam attempts
-                        try:
-                            await interaction.response.defer(
-                                ephemeral=True, thinking=False
-                            )
-                        except discord.InteractionResponded:
-                            pass
+                        await interaction.followup.send(
+                            f"{interaction.user.mention}, wait {int(time_left)}s before using another button.",
+                            ephemeral=True,
+                        )
+                        state.button_cooldowns[user_id] = (last_used, True)
                     return
-            # Set new user cooldown time
             state.button_cooldowns[user_id] = (current_time, False)
 
         # --- All Checks Passed ---
-        # Defer the interaction publicly (so the "Thinking..." state is brief)
-        if not interaction.response.is_done():
-            try:
-                await interaction.response.defer(ephemeral=False, thinking=False)
-            except discord.InteractionResponded:
-                logger.warning(
-                    "Interaction responded before public deferral in button handler."
-                )
-                pass
 
-        # Send a public announcement message for the button press
+        # Send a public announcement message (This goes to the channel, not the interaction response)
         try:
             announcement_content = f"**{interaction.user.display_name}** used `{command}`"
             await interaction.channel.send(announcement_content, delete_after=30.0)
             logger.info(f"Announced button use: {interaction.user.name} used {command}")
         except discord.Forbidden:
-            logger.warning(
-                f"Missing permissions to send announcement message in #{interaction.channel.name}"
-            )
+            logger.warning(f"Missing permissions to send announcement message in #{interaction.channel.name}")
         except Exception as e:
             logger.error(f"Failed to send button usage announcement: {e}")
 
         # Record statistics
         try:
             record_command_usage(helper.state.analytics, command)
-            record_command_usage_by_user(
-                helper.state.analytics, interaction.user.id, command
-            )
-            logger.debug(
-                f"Recorded button command '{command}' for user '{interaction.user.name}' in stats."
-            )
+            record_command_usage_by_user(helper.state.analytics, interaction.user.id, command)
         except Exception as e:
-            logger.error(
-                f"Failed to record button command usage in stats: {e}", exc_info=True
-            )
+            logger.error(f"Failed to record button command usage in stats: {e}", exc_info=True)
 
         # --- Execute the Command ---
         try:
-            # Create a "mock" Context object to pass to the command functions
-            # This allows us to reuse the existing command logic
+            # Create a "mock" Context object
             mock_ctx = type(
                 "obj",
                 (object,),
@@ -359,7 +282,7 @@ async def _button_callback_handler(
                     "guild": interaction.guild,
                     "message": interaction.message,
                     "invoked_with": command.lstrip("!"),
-                    "from_button": True,  # Flag to prevent re-announcing
+                    "from_button": True,
                 },
             )()
 
@@ -373,56 +296,34 @@ async def _button_callback_handler(
                 await helper.show_rules(mock_ctx)
             elif command == "!mpauseplay":
                 cmd_obj = helper.bot.get_command("mpauseplay")
-                if cmd_obj:
-                    await cmd_obj.callback(mock_ctx)
-                else:
-                    logger.error("Could not find !mpauseplay command object for button.")
+                if cmd_obj: await cmd_obj.callback(mock_ctx)
             elif command == "!mskip":
                 cmd_obj = helper.bot.get_command("mskip")
-                if cmd_obj:
-                    await cmd_obj.callback(mock_ctx)
-                else:
-                    logger.error("Could not find !mskip command object for button.")
+                if cmd_obj: await cmd_obj.callback(mock_ctx)
             elif command == "!mshuffle":
                 cmd_obj = helper.bot.get_command("mshuffle")
-                if cmd_obj:
-                    await cmd_obj.callback(mock_ctx)
-                else:
-                    logger.error("Could not find !mshuffle command object for button.")
+                if cmd_obj: await cmd_obj.callback(mock_ctx)
             elif command == "!mclear":
                 # !mclear needs the interaction object for its confirmation modal
+                # It handles the pre-deferred state internally via followup.
                 await helper.confirm_and_clear_music_queue(interaction)
             else:
-                logger.warning(f"Button pressed for unhandled command: {command}")
-                await interaction.followup.send(
-                    "This button action is not yet implemented.", ephemeral=True
-                )
+                await interaction.followup.send("This button action is not yet implemented.", ephemeral=True)
+                
         except Exception as invoke_err:
-            logger.error(
-                f"Error directly calling function for command '{command}' from button: {invoke_err}",
-                exc_info=True,
-            )
-            try:
-                await interaction.followup.send(
-                    "An error occurred while running that action.", ephemeral=True
-                )
-            except Exception:
-                pass
+            logger.error(f"Error executing '{command}' from button: {invoke_err}", exc_info=True)
+            await interaction.followup.send("An error occurred while running that action.", ephemeral=True)
+
     except Exception as e:
         logger.error(f"Error in button callback: {e}", exc_info=True)
+        # Attempt to send a generic error if possible
         try:
-            if interaction.response.is_done():
-                await interaction.followup.send(
-                    "An error occurred processing the button click.", ephemeral=True
-                )
+            if not interaction.response.is_done():
+                await interaction.response.send_message("An error occurred processing the button click.", ephemeral=True)
             else:
-                await interaction.response.send_message(
-                    "An error occurred processing the button click.", ephemeral=True
-                )
-        except Exception as final_err:
-            logger.error(
-                f"Failed to send final error message for button callback: {final_err}"
-            )
+                await interaction.followup.send("An error occurred processing the button click.", ephemeral=True)
+        except Exception:
+            pass
 
 class HelpButton(Button):
     """A custom button for the Omegle Help View."""

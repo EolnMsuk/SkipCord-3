@@ -301,21 +301,34 @@ async def global_skip() -> None:
     await omegle_handler.custom_skip() # Passes ctx=None, which is correct
     logger.info('Executed global skip command via hotkey.')
 async def global_mskip() -> None:
+    # FIX: Ensure connection allows the bot to recover the client reference if it was lost
+    if not await ensure_voice_connection():
+        return 
+        
     async with state.music_lock:
+        # Check if music is enabled, client exists, and something is actually playing/paused
         if not state.music_enabled or not bot.voice_client_music or (not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())):
-            logger.warning('Global mskip hotkey pressed, but nothing is playing or music is disabled.')
             return
+
         if state.music_mode == 'loop':
             state.music_mode = 'shuffle'
             logger.info('Loop mode disabled via global hotkey skip. Switched to Shuffle.')
+        
         state.is_music_paused = False
         bot.voice_client_music.stop()
+        
     logger.info('Executed global music skip command via hotkey.')
 async def global_mpause() -> None:
-    if not state.music_enabled or not bot.voice_client_music or (not bot.voice_client_music.is_connected()):
-        logger.warning('Global mpause hotkey pressed, but bot is not in VC or music is disabled.')
+    # FIX ADDED: Ensure connection before checking state
+    if not await ensure_voice_connection():
+        logger.warning('Global mpause hotkey pressed, but could not ensure voice connection.')
         return
+
+    # Now checks against the fresh bot.voice_client_music guaranteed by the line above
     async with state.music_lock:
+        if not state.music_enabled or not bot.voice_client_music:
+            return
+
         if bot.voice_client_music.is_playing():
             bot.voice_client_music.pause()
             state.is_music_paused = True
@@ -329,7 +342,12 @@ async def global_mpause() -> None:
         else:
             logger.warning('Global mpause hotkey pressed, but nothing is playing or paused.')
     asyncio.create_task(update_music_menu())
+
 async def global_mvolup() -> None:
+    # FIX ADDED: Ensure connection
+    if not await ensure_voice_connection():
+        return
+        
     if not state.music_enabled or not bot.voice_client_music:
         return
     async with state.music_lock:
@@ -339,7 +357,12 @@ async def global_mvolup() -> None:
             bot.voice_client_music.source.volume = new_volume
     logger.info(f'Volume increased to {int(state.music_volume * 100)}% via hotkey.')
     asyncio.create_task(update_music_menu())
+
 async def global_mvoldown() -> None:
+    # FIX ADDED: Ensure connection
+    if not await ensure_voice_connection():
+        return
+
     if not state.music_enabled or not bot.voice_client_music:
         return
     async with state.music_lock:
@@ -532,7 +555,7 @@ async def scan_and_shuffle_music() -> int:
         logger.error(f'Failed to save persistent metadata cache: {e}')
     return len(state.shuffle_queue)
 
-async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None):
+async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None, retry_count: int = 0):
     async with state.music_lock:
         state.is_processing_song = True
     if not state.music_enabled:
@@ -587,13 +610,14 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None):
                 logger.error(f"Failed to resolve YouTube stream URL with yt-dlp: {ydl_e}", exc_info=True)
                 if ctx:
                     await ctx.send(f"❌ **Playback Error:** Could not resolve stream for `{song_display_name}`. Skipping.", delete_after=15)
-                # Manually trigger the next song
+                # Manually trigger the next song with retry count
                 async with state.music_lock:
                     state.is_music_playing = False
                     state.is_processing_song = False
                 asyncio.create_task(update_music_menu())
                 await asyncio.sleep(2.0)
-                asyncio.create_task(play_next_song()) # Skip to next song
+                # CHANGED: Use bot.loop.create_task and pass retry_count
+                bot.loop.create_task(play_next_song(retry_count=retry_count + 1)) 
                 return # Stop executing this function
         # --- END OF NEW LOGIC ---
         
@@ -632,6 +656,7 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None):
         
         logger.debug('Audio source created successfully. Attempting to play.')
         await asyncio.sleep(0.5)
+        # Note: We do NOT pass retry_count here. A successful play resets the counter to 0 (default arg).
         bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(after_playback_handler(e), bot.loop))
         async with state.music_lock:
             state.is_processing_song = False
@@ -662,7 +687,8 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None):
             state.is_processing_song = False
         asyncio.create_task(update_music_menu())
         await asyncio.sleep(2.0)
-        asyncio.create_task(play_next_song())
+        # CHANGED: Use bot.loop.create_task and pass retry_count
+        bot.loop.create_task(play_next_song(retry_count=retry_count + 1))
 
 async def after_playback_handler(error=None):
     if error:
@@ -688,14 +714,36 @@ async def start_music_playback():
             logger.info('Music queue is empty, rescanning library before playback.')
             await scan_and_shuffle_music()
         await play_next_song()
-async def play_next_song(error=None, is_recursive_call=False):
+async def play_next_song(error=None, retry_count: int = 0):
+    # --- SAFETY CHECK: Prevent infinite loops/log spam ---
+    MAX_RETRIES = 5 
+    if retry_count >= MAX_RETRIES:
+        logger.error(f"⚠️ Stopped playback after {retry_count} consecutive failures to prevent log spam.")
+        async with state.music_lock:
+            state.is_music_playing = False
+            state.is_processing_song = False
+            state.current_song = None
+        
+        # Optional: Notify in command channel
+        channel = bot.get_channel(bot_config.COMMAND_CHANNEL_ID)
+        if channel:
+            await channel.send("⚠️ **Playback Stopped:** Too many consecutive errors.", delete_after=30)
+        
+        asyncio.create_task(update_music_menu())
+        return
+    # -----------------------------------------------------
+
     if not state.music_enabled:
         return
+    
     if error:
         logger.error(f'Error in music player callback: {error}')
+    
     song_to_play_info = None
     ctx_for_playback = None
     needs_library_scan = False
+    
+    # 1. Check for stop signals (e.g., clear command)
     async with state.music_lock:
         if getattr(state, 'stop_after_clear', False):
             state.stop_after_clear = False
@@ -707,6 +755,8 @@ async def play_next_song(error=None, is_recursive_call=False):
             await bot.change_presence(activity=None)
             asyncio.create_task(update_music_menu())
             return
+
+    # 2. Ensure Voice Connection
     if not await ensure_voice_connection():
         logger.critical('Music playback stopped: Could not establish a voice connection.')
         async with state.music_lock:
@@ -714,7 +764,10 @@ async def play_next_song(error=None, is_recursive_call=False):
             state.current_song = None
             state.is_processing_song = False
         return
+
+    # 3. Determine Next Song
     async with state.music_lock:
+        # Priority 1: Override (Jump to song)
         if state.play_next_override:
             logger.info('Manual override from !q detected. Playing next song in queue.')
             if state.search_queue:
@@ -722,9 +775,13 @@ async def play_next_song(error=None, is_recursive_call=False):
             elif state.active_playlist:
                 song_to_play_info = state.active_playlist.pop(0)
             state.play_next_override = False
+        
+        # Priority 2: Loop Mode
         elif state.music_mode == 'loop' and state.current_song:
             song_to_play_info = state.current_song
             logger.info('Looping current song.')
+        
+        # Priority 3: User Queues (Shuffle, Alphabetical, or FIFO)
         else:
             user_queue = state.active_playlist + state.search_queue
             if user_queue:
@@ -739,6 +796,7 @@ async def play_next_song(error=None, is_recursive_call=False):
                         except ValueError:
                             logger.error('Consistency error: Could not find the shuffled chosen song in any queue to remove it.')
                             song_to_play_info = None
+                
                 elif state.music_mode == 'alphabetical':
                     logger.info('Alphabetical mode active. Picking the next song by title from the user queue.')
                     sorted_queue = sorted(user_queue, key=lambda s: s.get('title', '').lower())
@@ -751,12 +809,16 @@ async def play_next_song(error=None, is_recursive_call=False):
                         except ValueError:
                             logger.error('Consistency error: Could not find the alphabetically chosen song in any queue to remove it.')
                             song_to_play_info = None
+                
                 elif state.search_queue:
                     song_to_play_info = state.search_queue.pop(0)
                     logger.info(f"Playing next from user search queue (FIFO): {song_to_play_info.get('title')}")
+                
                 elif state.active_playlist:
                     song_to_play_info = state.active_playlist.pop(0)
                     logger.info(f"Playing next from active playlist (FIFO): {song_to_play_info.get('title')}")
+
+            # Priority 4: Local Library (Background Shuffle)
             if not song_to_play_info:
                 if not state.shuffle_queue:
                     needs_library_scan = True
@@ -765,29 +827,34 @@ async def play_next_song(error=None, is_recursive_call=False):
                     display_title = get_display_title_from_path(song_path)
                     song_to_play_info = {'path': song_path, 'title': display_title, 'is_stream': False}
                     logger.info(f'Playing next from local library (Default Shuffle): {display_title}')
+
+    # 4. Handle Empty Library / Scanning
     if needs_library_scan:
-        if is_recursive_call:
-            logger.error('Recursive call to play_next_song detected after a failed library scan. Halting to prevent infinite loop.')
-            async with state.music_lock:
-                state.is_processing_song = False
-            return
         logger.info('Local music queue is empty. Rescanning and reshuffling library...')
         await scan_and_shuffle_music()
-        await play_next_song(is_recursive_call=True)
+        
+        # RECURSION FIX: Create task instead of recursive await, pass incremented retry_count
+        bot.loop.create_task(play_next_song(retry_count=retry_count + 1))
         return
+
+    # 5. Play the Song
     if song_to_play_info:
         ctx_for_playback = song_to_play_info.get('ctx')
         async with state.music_lock:
             state.is_music_playing = True
             state.is_music_paused = False
             state.current_song = song_to_play_info
-        await _play_song(song_to_play_info, ctx=ctx_for_playback)
+        
+        # PASS RETRY COUNT to _play_song
+        await _play_song(song_to_play_info, ctx=ctx_for_playback, retry_count=retry_count)
     else:
+        # No song found (and not scanning), so stop.
         async with state.music_lock:
             state.is_music_playing = False
             state.is_music_paused = False
             state.current_song = None
             state.is_processing_song = False
+        
         logger.warning('Music playback finished. All queues and local library are empty.')
         await bot.change_presence(activity=None)
         asyncio.create_task(update_music_menu())
@@ -1259,7 +1326,14 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             
             if member.id not in bot_config.ALLOWED_USERS:
                 async with state.vc_lock:
+                    # 1. Start Camera Timer
                     state.camera_off_timers[member.id] = time.time()
+                    
+                    # 2. Start Deafen Timer (if they joined self-deafened but not server-deafened)
+                    if after.self_deaf and not after.deaf:
+                        state.deafen_timers[member.id] = time.time()
+                        logger.info(f"Started deafen timer for '{member.display_name}' (Joined Deafened).")
+                        
                     logger.info(f"Started camera grace period timer for '{member.display_name}'.")
                 asyncio.create_task(_soundboard_grace_protocol(member, bot_config))
         
@@ -1267,16 +1341,27 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             # User Left a Moderated VC
             if was_in_streaming_vc:
                 logger.info(f'VC LEAVE: {member.display_name} ({member.name} | ID: {member.id}).')
+            
+            # Clean up timers on leave
+            async with state.vc_lock:
+                state.deafen_timers.pop(member.id, None)
+                state.camera_off_timers.pop(member.id, None)
 
         elif was_in_mod_vc and is_now_in_mod_vc:
             # User Switched / Changed State in Moderated VC
             if before.channel.id == bot_config.STREAMING_VC_ID and after.channel.id != bot_config.STREAMING_VC_ID:
                 logger.info(f'VC SWITCH: {member.display_name} ({member.name} | ID: {member.id}).')
             
+            # Camera Logic
             camera_turned_on = not before.self_video and after.self_video
             camera_turned_off = before.self_video and (not after.self_video)
             
+            # Deafen Logic
+            is_self_deaf = after.self_deaf and not after.deaf
+            was_self_deaf = before.self_deaf and not before.deaf
+            
             if member.id not in bot_config.ALLOWED_USERS:
+                # Handle Camera
                 if camera_turned_off:
                     async with state.vc_lock:
                         state.camera_off_timers[member.id] = time.time()
@@ -1295,6 +1380,16 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                             logger.info(f"Auto-unmuted '{member.display_name}' after turning camera on.")
                         except Exception as e:
                             logger.error(f"Failed to auto-unmute '{member.display_name}': {e}")
+
+                # Handle Self-Deafen
+                if is_self_deaf and not was_self_deaf:
+                    async with state.vc_lock:
+                        state.deafen_timers[member.id] = time.time()
+                        logger.info(f"Started deafen timer for '{member.display_name}'.")
+                elif not is_self_deaf and was_self_deaf:
+                    async with state.vc_lock:
+                        state.deafen_timers.pop(member.id, None)
+                        logger.info(f"Stopped deafen timer for '{member.display_name}'.")
 
     # --- Omegle Automation Logic ---
     is_relevant_event = was_in_streaming_vc or is_now_in_streaming_vc
@@ -1533,40 +1628,62 @@ async def _trigger_full_menu_repost():
             logger.error(f'Error during triggered menu repost: {e}', exc_info=True)
 @tasks.loop(minutes=9.31)
 async def periodic_menu_update() -> None:
+    # Prevent this task from running if a reactive repost (triggered by an interaction error) 
+    # is currently in progress. This prevents fighting over the channel.
     if state.menu_repost_lock.locked():
         logger.info('Periodic menu update skipped: Repost lock is currently held.')
         return
+
     async with state.menu_repost_lock:
         logger.info('Starting scheduled periodic menu update...')
         try:
             guild = bot.get_guild(bot_config.GUILD_ID)
             if not guild:
                 return
+
             channel = guild.get_channel(bot_config.COMMAND_CHANNEL_ID)
             if not channel:
-                logger.warning(f'Help menu channel with ID {bot_config.COMMAND_CHANNEL_ID} not found.')
+                logger.warning(f'Command channel with ID {bot_config.COMMAND_CHANNEL_ID} not found.')
                 return
+
+            # 1. Reset Message IDs in State
+            # We are about to delete everything, so the old IDs are now invalid.
             state.music_menu_message_id = None
             state.times_report_message_id = None
-            state.timeouts_report_message_id = None # Assumes state.timeouts_report_message_id exists
+            state.timeouts_report_message_id = None
+
+            # 2. Purge the Channel
+            # Removes the last 100 messages to ensure our menus are at the bottom.
             await safe_purge(channel, limit=100)
             await asyncio.sleep(1)
+
+            # 3. Send Times Report (Top VC Users)
             times_report_msg = await helper.show_times_report(channel)
             if times_report_msg:
                 state.times_report_message_id = times_report_msg.id
             await asyncio.sleep(1)
-            timeouts_report_msg = await helper.show_timeouts_report(channel) 
+
+            # 4. Send Timeouts Report (Active Punishments)
+            timeouts_report_msg = await helper.show_timeouts_report(channel)
             if timeouts_report_msg:
                 state.timeouts_report_message_id = timeouts_report_msg.id
             await asyncio.sleep(1)
+
+            # 5. Send Music Menu (If enabled)
             if state.music_enabled:
                 music_menu_msg = await helper.send_music_menu(channel)
-                if music_menu_msg and hasattr(state, 'music_menu_message_id'):
+                if music_menu_msg:
                     state.music_menu_message_id = music_menu_msg.id
                 await asyncio.sleep(1)
+
+            # 6. Send Omegle Help Menu (If enabled)
             if state.omegle_enabled:
                 await helper.send_help_menu(channel)
+                # Note: Help menu is static/persistent, we don't strictly track its ID 
+                # for updates, but we do repost it here to keep it visible.
+
             logger.info('Scheduled periodic menu update completed.')
+
         except Exception as e:
             logger.error(f'Periodic menu update task failed: {e}', exc_info=True)
 async def safe_purge(channel: Any, limit: int=100) -> None:
@@ -1638,13 +1755,17 @@ async def timeout_unauthorized_users_task() -> None:
         is_active = state.vc_moderation_active
     if not is_active:
         return
+    
     guild = bot.get_guild(bot_config.GUILD_ID)
     if not guild:
         return
+        
     punishment_vc = guild.get_channel(bot_config.PUNISHMENT_VC_ID)
     if not punishment_vc:
         logger.warning('Punishment VC not found, moderation task cannot run.')
         return
+
+    # Identify all moderated VCs
     moderated_vcs = []
     if (streaming_vc := guild.get_channel(bot_config.STREAMING_VC_ID)):
         moderated_vcs.append(streaming_vc)
@@ -1652,67 +1773,122 @@ async def timeout_unauthorized_users_task() -> None:
         if (alt_vc := guild.get_channel(vc_id)):
             if alt_vc not in moderated_vcs:
                 moderated_vcs.append(alt_vc)
+    
     if not moderated_vcs:
         logger.warning('No valid moderated VCs found.')
         return
+
     users_to_check = []
+    violation_type = {} # Map member_id -> "camera" or "deafen"
     current_time = time.time()
+
+    # --- Identify Violations ---
     async with state.vc_lock:
+        # 1. Check Camera Timers
         for member_id, start_time in list(state.camera_off_timers.items()):
             if current_time - start_time >= bot_config.CAMERA_OFF_ALLOWED_TIME:
                 users_to_check.append(member_id)
+                violation_type[member_id] = "camera"
+
+        # 2. Check Deafen Timers
+        # Only check if they aren't already flagged for a camera violation
+        for member_id, start_time in list(state.deafen_timers.items()):
+            if member_id not in users_to_check:
+                if current_time - start_time >= bot_config.DEAFEN_ALLOWED_TIME:
+                    users_to_check.append(member_id)
+                    violation_type[member_id] = "deafen"
+
+    # --- Process Violations ---
     for member_id in users_to_check:
         member = guild.get_member(member_id)
+        
+        # Cleanup if member is gone or no longer in voice
         if not member or not member.voice or (not member.voice.channel):
             async with state.vc_lock:
                 state.camera_off_timers.pop(member_id, None)
+                state.deafen_timers.pop(member_id, None)
             continue
+            
         vc = member.voice.channel
+        v_type = violation_type.get(member_id, "camera")
+
+        # Verify violation is still valid inside the loop (Race condition check)
         async with state.vc_lock:
-            timer_start_time = state.camera_off_timers.get(member_id)
-            if not timer_start_time or time.time() - timer_start_time < bot_config.CAMERA_OFF_ALLOWED_TIME:
+            if v_type == "camera":
+                timer = state.camera_off_timers.get(member_id)
+                allowed_time = bot_config.CAMERA_OFF_ALLOWED_TIME
+                # Reset timer now because we are about to punish
+                state.camera_off_timers.pop(member_id, None) 
+            else:
+                timer = state.deafen_timers.get(member_id)
+                allowed_time = bot_config.DEAFEN_ALLOWED_TIME
+                # Reset timer now because we are about to punish
+                state.deafen_timers.pop(member_id, None)
+
+            # If timer was removed or they fixed it just in time, skip
+            if not timer or time.time() - timer < allowed_time:
                 continue
-            state.camera_off_timers.pop(member_id, None)
+
+        # Increment Violation Count
         violation_count = 0
         async with state.moderation_lock:
             state.analytics['violation_events'] += 1
             state.user_violations[member_id] = state.user_violations.get(member_id, 0) + 1
             violation_count = state.user_violations[member_id]
+
+        # Define messages based on violation type
+        if v_type == "deafen":
+            violation_reason = f"Self-deafened for >5 mins in {vc.name}."
+            dm_reason = "being self-deafened for too long"
+        else:
+            violation_reason = f"Camera off in {vc.name}."
+            dm_reason = "not having a camera on"
+
         try:
             punishment_applied = ''
+            
+            # --- Punishment Logic ---
             if violation_count == 1:
-                reason = f'Must have camera on while in the {vc.name} VC.'
-                await member.move_to(punishment_vc, reason=reason)
+                # First Offense: Move to Punishment VC
+                await member.move_to(punishment_vc, reason=violation_reason)
                 punishment_applied = 'moved'
-                await helper.send_punishment_vc_notification(member, reason, bot.user.mention)
-                logger.info(f'Moved {member.name} to PUNISHMENT VC (from {vc.name}).')
+                await helper.send_punishment_vc_notification(member, violation_reason, bot.user.mention)
+                logger.info(f'Moved {member.name} to PUNISHMENT VC (Reason: {v_type}).')
+                
             elif violation_count == 2:
+                # Second Offense: Short Timeout
                 timeout_duration = bot_config.TIMEOUT_DURATION_SECOND_VIOLATION
-                reason = f'2nd camera violation in {vc.name}.'
+                reason = f'2nd violation ({v_type}) in {vc.name}.'
                 await member.timeout(timedelta(seconds=timeout_duration), reason=reason)
                 punishment_applied = 'timed out'
                 await helper._log_timeout_in_state(member, timeout_duration, reason, 'AutoMod')
-                asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
-                logger.info(f'Timed out {member.name} for {timeout_duration}s (from {vc.name}).')
+                asyncio.create_task(helper.update_timeouts_report_menu())
+                logger.info(f'Timed out {member.name} for {timeout_duration}s (Reason: {v_type}).')
+                
             else:
+                # Third+ Offense: Long Timeout
                 timeout_duration = bot_config.TIMEOUT_DURATION_THIRD_VIOLATION
-                reason = f'Repeated camera violations in {vc.name}.'
+                reason = f'Repeated violation ({v_type}) in {vc.name}.'
                 await member.timeout(timedelta(seconds=timeout_duration), reason=reason)
                 punishment_applied = 'timed out'
                 await helper._log_timeout_in_state(member, timeout_duration, reason, 'AutoMod')
-                asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
-                logger.info(f'Timed out {member.name} for {timeout_duration}s (from {vc.name}).')
+                asyncio.create_task(helper.update_timeouts_report_menu())
+                logger.info(f'Timed out {member.name} for {timeout_duration}s (Reason: {v_type}).')
+
+            # --- Send DM Notification ---
             is_dm_disabled = False
             async with state.moderation_lock:
                 is_dm_disabled = member_id in state.users_with_dms_disabled
+            
             if not is_dm_disabled:
                 try:
-                    await member.send(f"You've been {punishment_applied} for not having a camera on in the VC.")
+                    await member.send(f"You've been {punishment_applied} for {dm_reason} in the voice channel.")
                 except discord.Forbidden:
                     async with state.moderation_lock:
                         state.users_with_dms_disabled.add(member_id)
                 except Exception as e:
                     logger.error(f'Failed to send violation DM to {member.name}: {e}')
+
         except discord.Forbidden:
             logger.warning(f'Missing permissions to punish {member.name} in {vc.name}.')
         except discord.HTTPException as e:
@@ -2020,7 +2196,6 @@ async def msearch(ctx, *, query: str):
                 if results:
                     tracks_to_search.extend(results['items'])
             elif '/playlist/' in clean_query:
-                # --- MODIFIED: Fetch in pages of 50 ---
                 # FIX: Async wrapper
                 results = await asyncio.to_thread(sp.playlist_tracks, clean_query, limit=50)
                 if results:
@@ -2038,6 +2213,10 @@ async def msearch(ctx, *, query: str):
                             logger.debug(f"Fetching next page of Spotify playlist... (current count: {len(tracks_to_search)})")
                             # FIX: Async wrapper
                             results = await asyncio.to_thread(sp.next, results) # Get next page
+                            
+                            # *** INSERT HERE ***
+                            await asyncio.sleep(0.1) 
+                            
                         else:
                             results = None # No more pages
 
@@ -2209,148 +2388,237 @@ async def msearch(ctx, *, query: str):
             await play_next_song()
         return
     class SearchResultsView(discord.ui.View):
-        def __init__(self, hits: list, author: discord.Member, query: str, is_Youtube: bool, youtube_page: int=1):
+        def __init__(self, hits: list, author: discord.Member, query: str, is_Youtube: bool, youtube_page: int = 1):
             super().__init__(timeout=180.0)
-            self.hits, self.author, self.query, self.is_Youtube, self.youtube_page = (hits, author, query, is_Youtube, youtube_page)
-            self.current_page, self.page_size = (0, 23)
+            self.hits = hits
+            self.author = author
+            self.query = query
+            self.is_Youtube = is_Youtube
+            self.youtube_page = youtube_page
+            
+            self.current_page = 0
+            self.page_size = 23
             self.total_pages = (len(self.hits) + self.page_size - 1) // self.page_size
             self.total_pages = max(1, self.total_pages)
+            
             self.message = None
             self.update_components()
+
         def update_components(self):
             self.clear_items()
             self.add_item(self.create_dropdown())
+            
+            # Local Navigation (if hits span multiple pages)
             if not self.is_Youtube and self.total_pages > 1:
                 self.add_item(self.create_nav_button('⬅️ Prev', 'prev_page', self.current_page == 0))
                 self.add_item(self.create_nav_button('Next ➡️', 'next_page', self.current_page >= self.total_pages - 1))
+            
+            # YouTube API Navigation (fetch next 10 results)
             if self.is_Youtube:
                 self.add_item(self.create_youtube_nav_button('Next Page ➡️', 'youtube_next_page', len(self.hits) < 10))
+
         def create_dropdown(self) -> discord.ui.Select:
             start_index = self.current_page * self.page_size
             end_index = start_index + self.page_size
             page_hits = self.hits[start_index:end_index]
+            
             options = []
+            
+            # Option to switch to YouTube search
             if not self.is_Youtube:
-                options.append(discord.SelectOption(label=f"Search YouTube for '{self.query[:50]}'", value='search_youtube', emoji='📺'))
+                options.append(discord.SelectOption(
+                    label=f"Search YouTube for '{self.query[:50]}'", 
+                    value='search_youtube', 
+                    emoji='📺'
+                ))
+            
+            # Option to add all displayed songs
             if page_hits:
-                options.append(discord.SelectOption(label=f'Add All ({len(page_hits)}) On This Page', value='add_all', emoji='➕'))
+                options.append(discord.SelectOption(
+                    label=f'Add All ({len(page_hits)}) On This Page', 
+                    value='add_all', 
+                    emoji='➕'
+                ))
+            
+            # Individual song options
             for i, hit in enumerate(page_hits):
-                options.append(discord.SelectOption(label=f"{start_index + i + 1}. {hit['title']}"[:95], value=str(start_index + i)))
+                options.append(discord.SelectOption(
+                    label=f"{start_index + i + 1}. {hit['title']}"[:95], 
+                    value=str(start_index + i)
+                ))
+            
             placeholder = f'Page {self.current_page + 1}/{self.total_pages}...' if not self.is_Youtube else f'YouTube Page {self.youtube_page}...'
+            
             select_menu = discord.ui.Select(placeholder=placeholder, options=options)
             select_menu.callback = self.select_callback
             return select_menu
+
         def create_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, custom_id=custom_id, disabled=disabled)
+            
             async def nav_callback(interaction: discord.Interaction):
                 if interaction.user != self.author:
                     await interaction.response.send_message('You cannot control this menu.', ephemeral=True)
                     return
+                
                 if interaction.data['custom_id'] == 'prev_page':
                     self.current_page -= 1
                 elif interaction.data['custom_id'] == 'next_page':
                     self.current_page += 1
+                
                 self.update_components()
                 await interaction.response.edit_message(view=self)
+            
             button.callback = nav_callback
             return button
+
         def create_youtube_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary, custom_id=custom_id, disabled=disabled)
+            
             async def youtube_nav_callback(interaction: discord.Interaction):
                 if interaction.user != self.author:
                     await interaction.response.send_message('You cannot control this menu.', ephemeral=True)
                     return
+                
                 await interaction.response.edit_message(content=f'⏳ Loading page {self.youtube_page + 1} of YouTube results...', view=None)
+                
+                # Fetch next page from YouTube
                 next_page = self.youtube_page + 1
                 next_page_ydl_opts = YDL_OPTIONS.copy()
                 next_page_ydl_opts['playliststart'] = self.youtube_page * 10 + 1
+                
                 new_hits = []
                 try:
                     with yt_dlp.YoutubeDL(next_page_ydl_opts) as ydl:
                         search_results = await asyncio.to_thread(ydl.extract_info, f'ytsearch10:{self.query}', download=False)
+                        
                         if 'entries' in search_results:
                             for entry in search_results.get('entries', []):
                                 if not entry or not entry.get('url'):
                                     continue
+                                
                                 title = entry.get('title', '').lower()
                                 if '[deleted video]' in title or '[private video]' in title:
                                     logger.info(f"Skipping unavailable video from YouTube 'Next Page': {entry.get('title')}")
                                     continue
-                                new_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True})
+                                
+                                new_hits.append({
+                                    'title': entry.get('title', 'Unknown Title'),
+                                    'path': entry.get('webpage_url', entry.get('url')),
+                                    'is_stream': True
+                                })
                 except Exception as e:
                     logger.error(f"YouTube next page search failed for query '{self.query}': {e}", exc_info=True)
                     self.update_components()
                     await interaction.message.edit(content='An error occurred.', view=self)
                     return
+
                 if not new_hits:
                     self.disabled = True
                     self.update_components()
                     await interaction.message.edit(content='No more results found.', view=self)
                     return
-                new_view = SearchResultsView(hits=new_hits, author=self.author, query=self.query, is_Youtube=True, youtube_page=next_page)
+                
+                # Create new view for the new results
+                new_view = SearchResultsView(
+                    hits=new_hits, 
+                    author=self.author, 
+                    query=self.query, 
+                    is_Youtube=True, 
+                    youtube_page=next_page
+                )
                 new_view.message = interaction.message
                 await interaction.message.edit(content=f'Showing YouTube results page {next_page}:', view=new_view)
+            
             button.callback = youtube_nav_callback
             return button
+
         async def select_callback(self, interaction: discord.Interaction):
             await interaction.response.defer()
             if interaction.user != self.author:
                 await interaction.followup.send('You cannot control this menu.', ephemeral=True)
                 return
+            
             selected_value = interaction.data['values'][0]
+
+            # --- CASE 1: Switch to YouTube Search ---
             if selected_value == 'search_youtube':
                 await interaction.message.edit(content=f'⏳ Searching YouTube for `{self.query}`...', view=None)
                 youtube_hits = []
                 try:
                     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                         search_results = await asyncio.to_thread(ydl.extract_info, f'ytsearch10:{self.query}', download=False)
+                        
                         if 'entries' in search_results:
                             for entry in search_results['entries']:
                                 if not entry or not entry.get('url'):
                                     continue
+                                
                                 title = entry.get('title', '').lower()
                                 if '[deleted video]' in title or '[private video]' in title:
                                     logger.info(f"Skipping unavailable video from 'Search YouTube' button: {entry.get('title')}")
                                     continue
-                                youtube_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True})
+                                
+                                youtube_hits.append({
+                                    'title': entry.get('title', 'Unknown Title'),
+                                    'path': entry.get('webpage_url', entry.get('url')),
+                                    'is_stream': True
+                                })
                 except Exception as e:
                     await interaction.message.edit(content=f'❌ An error occurred: {e}')
                     logger.error(f'Youtube failed: {e}')
                     return
+                
                 if not youtube_hits:
                     await interaction.message.edit(content=f'❌ No songs found on YouTube for `{self.query}`.')
                     return
+                
                 new_view = SearchResultsView(youtube_hits, self.author, self.query, is_Youtube=True, youtube_page=1)
                 new_view.message = interaction.message
                 await interaction.message.edit(content=f'Found {len(youtube_hits)} results from YouTube:', view=new_view)
                 return
+
+            # --- CASE 2: Add All Songs on Page ---
             if selected_value == 'add_all':
-                start_index, end_index = (self.current_page * self.page_size, (self.current_page + 1) * self.page_size)
+                start_index = self.current_page * self.page_size
+                end_index = (self.current_page + 1) * self.page_size
                 songs_to_add_raw = self.hits[start_index:end_index]
-                songs_to_add, already_in_queue_count = ([], 0)
+                
+                songs_to_add = []
+                already_in_queue_count = 0
+                
                 async with state.music_lock:
                     existing_paths = {s.get('path') for s in state.active_playlist + state.search_queue}
                     if state.current_song:
                         existing_paths.add(state.current_song.get('path'))
+                
                 for song in songs_to_add_raw:
                     if song.get('path') and song['path'] not in existing_paths:
                         songs_to_add.append(song)
                         existing_paths.add(song['path'])
                     else:
                         already_in_queue_count += 1
+                
                 if not songs_to_add:
                     await interaction.followup.send(f'✅ All songs on this page are already in the queue.', ephemeral=True)
                     return
+                
                 async with state.music_lock:
                     state.search_queue.extend(songs_to_add)
-                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                    # UPDATED SAFETY CHECK: Check if client exists AND if it is playing/paused
+                    was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
+                
                 response_msg = f'🎵 {interaction.user.mention} added {len(songs_to_add)} songs.'
                 if already_in_queue_count > 0:
                     response_msg += f' ({already_in_queue_count} were duplicates).'
+                
                 await interaction.followup.send(response_msg)
                 asyncio.create_task(update_music_menu())
+                
                 if was_idle:
                     await asyncio.create_task(play_next_song())
+
+                # Move to next page if available, else disable view
                 if self.current_page < self.total_pages - 1:
                     self.current_page += 1
                     self.update_components()
@@ -2358,19 +2626,27 @@ async def msearch(ctx, *, query: str):
                 else:
                     for item in self.children:
                         item.disabled = True
-                        await interaction.message.edit(content='Added songs from the last page.', view=self)
+                    await interaction.message.edit(content='Added songs from the last page.', view=self)
+
+            # --- CASE 3: Add Single Selected Song ---
             else:
                 selected_song = self.hits[int(selected_value)]
+                
                 if await is_song_in_queue(bot.state, selected_song['path']):
                     await interaction.followup.send(f"⚠️ **{selected_song['title']}** is already in the queue.", ephemeral=True)
                     return
+                
                 async with state.music_lock:
                     state.search_queue.append(selected_song)
-                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                    # UPDATED SAFETY CHECK: Check if client exists AND if it is playing/paused
+                    was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
+                
                 await interaction.followup.send(f"🎵 {interaction.user.mention} added **{selected_song['title']}** to the queue.")
                 asyncio.create_task(update_music_menu())
+                
                 if was_idle:
                     await play_next_song()
+
         async def on_timeout(self):
             if self.message:
                 for item in self.children:

@@ -397,6 +397,7 @@ class BotConfig:
 
     # --- Moderation ---
     CAMERA_OFF_ALLOWED_TIME: int
+    DEAFEN_ALLOWED_TIME: int  # <--- Ensure this field exists here
     TIMEOUT_DURATION_SECOND_VIOLATION: int
     TIMEOUT_DURATION_THIRD_VIOLATION: int
 
@@ -482,6 +483,10 @@ class BotConfig:
             CAMERA_OFF_ALLOWED_TIME=getattr(
                 config_module, "CAMERA_OFF_ALLOWED_TIME", 30
             ),
+            # ---------------------------------------------------------
+            # THIS IS THE LINE YOU WERE MISSING IN THE RETURN STATEMENT:
+            DEAFEN_ALLOWED_TIME=getattr(config_module, "DEAFEN_ALLOWED_TIME", 300),
+            # ---------------------------------------------------------
             TIMEOUT_DURATION_SECOND_VIOLATION=getattr(
                 config_module, "TIMEOUT_DURATION_SECOND_VIOLATION", 60
             ),
@@ -639,6 +644,7 @@ class BotState:
     last_omegle_command_time: float = 0.0
 
     # --- Moderation State ---
+    deafen_timers: Dict[int, float] = field(default_factory=dict)
     camera_off_timers: Dict[int, float] = field(default_factory=dict)
     user_violations: ViolationCounts = field(default_factory=dict)
     hush_override_active: bool = False
@@ -1067,7 +1073,13 @@ class BotState:
                     for k, v in self.move_command_cooldowns.items()
                     if current_time - v < 3900  # ~1 hour
                 }
-
+                
+            self.deafen_timers = {
+                k: v
+                for k, v in self.deafen_timers.items()
+                if current_time - v < self.config.DEAFEN_ALLOWED_TIME * 2
+            }
+            
             self.active_timeouts = {
                 k: v
                 for k, v in self.active_timeouts.items()
