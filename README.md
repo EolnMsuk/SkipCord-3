@@ -1,4 +1,4 @@
-# SkipCord-3: A Discord / Omegle / Music Bot
+# SkipCord-3.6: A Discord / Omegle / Music Bot
 
 SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels who want to use Omegle or similar platforms as a group. It seamlessly integrates a shared streaming experience into a Discord voice channel, empowering the audience with control through an autonomous, interactive button menu. The bot features advanced moderation, detailed logging, automated rule enforcement, and a complete music system, all built on a fully asynchronous architecture for rock-solid performance.
 
@@ -11,50 +11,41 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 
 ### 🌐 Interactive Stream Control
 
-  * **Intuitive Button Menus**: Users control the stream (`!skip` ⏭️, `!refresh` 🔄, `!report` 🚩, `!rules` ℹ️) and music (`!mskip`, `!mpauseplay`, `!mshuffle`, `!mclear`) with persistent button menus. Requires being in the Streaming VC with camera on for most actions (except for Allowed Users). The music menu dynamically updates with the current song, playback status, mode, volume, and queue length. Includes an auto-updating leaderboard for top VC users (`!times`).
+  * **Intuitive Button Menus**: Users control the stream (`!skip` ⏭️, `!refresh` 🔄, `!rules` ℹ️) and music (`!mskip`, `!mpauseplay`, `!mclear`) with persistent button menus. Requires being in the Streaming VC with camera on for most actions.
+  * **Cloudflare & Security Bypass**: Version 3.6 includes advanced logic to detect and click "Verify you are human" (Cloudflare/Turnstile) checkboxes inside iframes, ensuring the stream recovers automatically after refreshes.
   * **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine.
   * **Auto-Start**: Automatically starts the stream by running `!skip` as soon as the first user joins the streaming VC with their camera on (configurable).
-  * **Auto-Pause**: Intelligently triggers a browser page refresh (`!refresh` 🔄 command) *only* when the last user with their camera on leaves the VC or turns their camera off, saving bandwidth. The bot also automatically handles common elements like terms checkboxes after a refresh.
+  * **Smart Auto-Pause & Graceful Shutdown**: Triggers a refresh *only* when the last user leaves. Includes a **14-second grace period** prevents the bot from rapidly toggling security tasks if a user rejoins quickly.
   * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
 
   <img width="438" height="985" alt="menus" src="https://github.com/user-attachments/assets/436c458a-f9f4-40fe-a44b-66a48abb9aa5" />
 
 ### 🛡️ Advanced Moderation & Automation
 
-  * **Camera Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs and applies escalating punishments for repeat violations (VC move -\> short timeout -\> long timeout).
-  * **Persistent Moderation Report**: A new `🛡️ Moderation Status 🛡️` menu is now displayed in the command channel. It updates in real-time to show all active timeouts (with reasons and moderators), command-disabled users, and a log of recent manual untimeouts.
-  * **`!move` Command**: Admins or designated roles can move users from the Streaming VC to the Punishment VC (e.g., for sleeping), with automatic notifications and cooldowns for non-owners.
-  * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the recent screenshots locally, **posts them to a Discord channel** (configurable, auto-deleted after 2 minutes), and logs details (including users present in the streaming VC) to a dedicated `ban.log` file.
-  * **Clean Command Channel**: Automatically deletes old command messages (after \~1 min) to keep the control channel tidy, while preserving the interactive menus.
-  * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time, command usage, and violation statistics for the next day.
-  * **Media-Only Channels**: Enforces rules in designated channels by automatically deleting any messages that do not contain an image, video, link, or other media.
-  * **Comprehensive Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands, moderation actions, and server events, saved to `bot.log`. Includes a separate, persistent `ban.log` for ban-specific events, featuring auto-rotation and compression. Status messages and critical errors (like **VC connection failures**) can be sent to a dedicated Discord log channel (configurable via `LOG_GC`).
+  * **Camera Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs and applies escalating punishments for repeat violations.
+  * **Persistent Moderation Report**: The `🛡️ Moderation Status 🛡️` menu updates in real-time (and persists through restarts) to show active timeouts, command-disabled users, and a log of recent manual untimeouts—now identifying **exactly which moderator** removed a timeout.
+  * **Deep Audit Logging**: The bot now fetches deeper audit logs (limit increased to 20) to ensure kicks and bans are never missed in high-traffic servers.
+  * **`!move` Command**: Admins or designated roles can move users from the Streaming VC to the Punishment VC (e.g., for sleeping), with automatic notifications.
+  * **Automatic Ban Handling**: Periodically captures browser screenshots (now using fixed base64 decoding for reliability). When a ban is detected, it saves the screenshots locally, **posts them to a Discord channel**, and logs details to a dedicated `ban.log`.
+  * **Leave Batching**: To reduce spam, "Member Left" notifications are now batched. Alerts are sent to the log channel *only* if the user had roles; otherwise, they are grouped into a summary.
+  * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time/usage statistics.
 
 <img width="1285" height="894" alt="console" src="https://github.com/user-attachments/assets/c75a454e-9fc1-45c1-8f94-c2686d61f43f" />
 
 ### 🎵 Integrated Music System
 
-  * **Versatile Playback**: Search / play songs or playlists from **YouTube** / **Spotify** / local files. Filters unavailable/deleted videos during search and playlist processing.
+  * **Versatile Playback**: Search/play songs from **YouTube** / **Spotify** / local files.
+  * **Improved Reliability**: Now uses `yt_dlp` to extract direct stream URLs before processing, significantly reducing playback errors on streams. Includes a race-condition fix for connection errors.
+  * **Role-Based Access**: Optionally restrict music control to specific roles using the `MUSIC_ROLES` configuration.
+  * **Spotify Limits**: To prevent queue flooding, Spotify playlist loading is capped at 100 tracks per request.
   * **Interactive Queue**: View the song queue with `!q` and instantly jump to any song using a dropdown menu.
-  * **Persistent Playlists**: Save the current queue as a named playlist, then load, list, or delete playlists at any time.
-  * **Multiple Playback Modes**: Effortlessly cycle between **Shuffle**, **Alphabetical**, and **Loop** modes.
-  * **Automatic Management**: The bot joins the VC when users with cameras are present and leaves when it's empty to conserve resources. Includes a watchdog task to ensure playback resumes if it unexpectedly stops.
-  * **Dynamic Menu**: The interactive music control menu updates in real-time to show the current song, playback status, volume, mode, and queue length.
+  * **Persistent Playlists**: Save/Load/Delete named playlists.
+  * **Watchdog**: Ensures music playback automatically resumes if it stalls while listeners are present.
 
 ### 📊 Persistent State & Analytics
 
-  * **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, window geometry, moderation settings, and menu message IDs—is saved to `data.json` and reloaded on startup, ensuring no data is lost after a crash or restart.
-  * **VC Time Tracking**: Tracks the cumulative time users spend in moderated voice channels, with daily leaderboards available via the `!times` command (also shown in the command channel menu).
-
-### 🔔 Comprehensive Event Notifications
-
-The bot keeps administrators informed with a robust, event-driven notification system. It uses rich, detailed embeds to provide real-time updates for all significant server activities:
-
-  * **Member Activity**: Joins, Leaves (batched for mass departures), Kicks, Bans, and Unbans.
-  * **Moderation Actions**: Timeouts Added/Removed, Role Changes, **VC Moves**.
-  * **Bot & Stream Status**: Bot Online, Stream Auto-Pause/Start, Browser Health (including **VC connection errors** sent to the configured `LOG_GC` channel), and Omegle Ban/Unban status notifications (including **pre-ban screenshots posted to Discord**).
-
-  <img width="445" height="493" alt="noti" src="https://github.com/user-attachments/assets/8b818810-d92a-4ab4-b78e-f4eb4dac232e" />
+  * **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, window geometry, and menu message IDs—is saved to `data.json`.
+  * **VC Time Tracking**: Tracks cumulative time users spend in moderated voice channels, with daily leaderboards (`!times`).
 
 ## 📋 Command List
 
@@ -71,7 +62,6 @@ The bot keeps administrators informed with a robust, event-driven notification s
 * `!vol 1-100` - Sets music volume (0-100).
 * `!m songname` - Searches for songs/URLs.
 * `!mclear` - Clears all songs from the search queue.
-* `!mshuffle` - Cycles music mode (Shuffle -> Alphabetical -> Loop).
 * `!np` - Shows currently playing song.
 * `!q` - Displays the interactive song queue.
 * `!playlist <save|load|list|delete> [name]` - Manages playlists.
@@ -93,6 +83,7 @@ The bot keeps administrators informed with a robust, event-driven notification s
 
 *(No channel or VC restrictions)*
 
+* `!mshuffle` - Cycles music mode (Shuffle -> Alphabetical -> Loop). *Restricted to Owners in v3.6.*
 * `!purge <count>` - Purges a specified number of messages.
 * `!help` - Sends the interactive help menu with buttons.
 * `!music` - Sends the interactive music control menu.
@@ -127,22 +118,14 @@ The bot keeps administrators informed with a robust, event-driven notification s
   * **Microsoft Edge**: Ensure the Edge browser is installed and up-to-date.
   * **Python 3.9+**: Install from [python.org](https://www.python.org/downloads/). Make sure to check **"Add Python to PATH"** during installation.
   * **FFmpeg**: Required for music playback. Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to your system's PATH.
-
-<!-- end list -->
-
-  + **Deno**: Required by the `yt-dlp` music dependency.
-  + 1.  Install Deno from [deno.land/install](https://deno.land/install).
-  + 2.  Ensure the Deno executable is added to your system's `PATH`. The installers usually handle this automatically.
-
-<!-- end list -->
-
+  * **Deno**: Required by the `yt-dlp` music dependency.
+      1.  Install Deno from [deno.land/install](https://deno.land/install).
+      2.  Ensure the Deno executable is added to your system's `PATH`.
   * **Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
 
-<!-- end list -->
-
-```
+```bash
 pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spotipy
-```
+````
 
 ### 2\. Create a Discord Bot
 
@@ -157,35 +140,31 @@ pip install discord.py python-dotenv selenium loguru keyboard mutagen yt-dlp spo
 
 ### 3\. Set up Spotify API (Optional)
 
-To enable playing songs, albums, and playlists from Spotify links, you need API credentials.
+To enable playing songs from Spotify links:
 
 1.  Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/) and log in.
 2.  Click **"Create app"**.
-3.  Give your app a **Name** and **Description** (e.g., "SkipCord Bot") and agree to the terms.
-4.  Once created, you will see your **Client ID**. Click **"Show client secret"** to reveal the **Client Secret**.
-5.  **Copy both the Client ID and Client Secret.** You will need them for the next step.
+3.  Once created, you will see your **Client ID**. Click **"Show client secret"** to reveal the **Client Secret**.
+4.  **Copy both.**
 
 ### 4\. File Setup
 
 1.  Create a folder for your bot and place all the provided Python files (`bot.py`, `helper.py`, `omegle.py`, `tools.py`) inside.
-2.  Create a new file in the same folder named `.env` (note the leading dot).
-3.  Open the `.env` file and add your credentials in the following format. Replace the placeholder text with the actual values you copied.
+2.  Create a new file in the same folder named `.env`.
+3.  Open the `.env` file and add your credentials:
 
 <!-- end list -->
 
 ```
 # .env file
-
 BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
 SPOTIPY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID_HERE
 SPOTIPY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET_HERE
 ```
 
-> **Note:** If you are not setting up Spotify, you can leave the `SPOTIPY` lines blank, but the `BOT_TOKEN` is required.
-
 ### 5\. Configure `config.py`
 
-Open `config.py` and replace the placeholder values with your server's specific IDs and settings. To get IDs, enable Developer Mode in Discord, then right-click a server, channel, or user and select "Copy ID".
+Open `config.py` and replace the placeholder values with your server's settings.
 
 ```python
 # --- REQUIRED SETTINGS ---
@@ -193,67 +172,57 @@ GUILD_ID = 123456789012345678                # Your Discord Server ID
 COMMAND_CHANNEL_ID = 123456789012345678      # Channel for bot commands and menus
 CHAT_CHANNEL_ID = 123456789012345678         # Channel for join/leave/ban notifications
 STREAMING_VC_ID = 123456789012345678         # Main streaming/music voice channel
-PUNISHMENT_VC_ID = 123456789012345678        # VC where users are moved for a first violation (or !move)
+PUNISHMENT_VC_ID = 123456789012345678        # VC where users are moved for a first violation
 OMEGLE_VIDEO_URL = "[https://example-stream-site.com/video](https://example-stream-site.com/video)" # URL for the streaming website
-# Go to edge://version/ in edge and copy the "Profile path" without the "/Default" or "/Profile X" at the end.
+# Go to edge://version/ in edge and copy "Profile path" without the "/Default" or "/Profile X" at the end.
 EDGE_USER_DATA_DIR = "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data/"
-# (Optional) Manually specify path to msedgedriver.exe if auto-detection fails
-EDGE_DRIVER_PATH = None # Example: "C:/path/to/msedgedriver.exe"
-# (Optional) Specify where ban screenshots are saved locally
-SS_LOCATION = 'screenshots'
+EDGE_DRIVER_PATH = None # Optional: "C:/path/to/msedgedriver.exe"
+SS_LOCATION = 'screenshots' # Local folder for screenshots
 
 # --- PERMISSIONS ---
-ALLOWED_USERS = {123456789012345678, 987654321098765432} # User IDs with full bot access (Owner Commands)
+ALLOWED_USERS = {123456789012345678, 987654321098765432} # User IDs with full bot access
 ADMIN_ROLE_NAME = ["Admin", "Moderator"]                 # Roles that can use Admin Commands
-MOVE_ROLE_NAME = ["Admin", "Mover"]                      # Roles allowed to use the !move command (if not Allowed User)
+MOVE_ROLE_NAME = ["Admin", "Mover"]                      # Roles allowed to use the !move command
+MUSIC_ROLES = ["DJ", "Supporter"]                        # Roles allowed to use Music commands (Leave empty for all)
 
 # --- OPTIONAL FEATURES ---
-LOG_GC = None                           # Channel ID for bot status/error messages (e.g., online, VC connect fail)
-ALT_VC_ID = []                          # List of additional voice channel IDs to moderate (apply camera rules)
-AUTO_STATS_CHAN = 123456789012345678    # Channel for daily auto-stats reports & BAN SCREENSHOTS
-MEDIA_ONLY_CHANNEL_ID = None            # Channel where only media is allowed (automatically delete non-media messages)
+LOG_GC = None                           # Channel ID for bot status/error messages
+ALT_VC_ID = []                          # List of additional voice channel IDs to moderate
+AUTO_STATS_CHAN = 123456789012345678    # Channel for daily stats & BAN SCREENSHOTS
+MEDIA_ONLY_CHANNEL_ID = None            # Channel where only media is allowed
 MOD_MEDIA = False                       # Enable/disable media-only channel moderation
-EMPTY_VC_PAUSE = True                   # Auto-refresh (!pause) stream when VC becomes empty of camera users
-AUTO_VC_START = False                   # Auto-skip (!start) stream when first camera user joins an empty VC
-AUTO_RELAY = False                      # Automatically send /relay to chat at start and after refresh then skip
-
-# Omegle Audio Automation
+EMPTY_VC_PAUSE = True                   # Auto-refresh (!pause) stream when VC becomes empty
+AUTO_VC_START = False                   # Auto-skip (!start) stream when first user joins
+AUTO_RELAY = False                      # Automatically send /relay to chat
 AUTO_OMEGLE_VOL = False                 # Automatically set the Omegle volume slider
-OMEGLE_VOL = 100                        # Volume (0-100) to set if AUTO_OMEGLE_VOL is True
+OMEGLE_VOL = 100                        # Volume (0-100) to set if enabled
 
-STATS_EXCLUDED_USERS = {123456789012345678} # User IDs to exclude from !times, !stats
+STATS_EXCLUDED_USERS = {123456789012345678} # User IDs to exclude from stats
 
 # --- TIMING & MESSAGES ---
-AUTO_STATS_HOUR_UTC = 5                 # UTC hour for daily auto-stats post & clear (0-23)
-AUTO_STATS_MINUTE_UTC = 0               # UTC minute for daily auto-stats post & clear (0-59)
-COMMAND_COOLDOWN = 5                    # Seconds cooldown for regular/button commands
-CAMERA_OFF_ALLOWED_TIME = 30            # Seconds a user can have camera off before punishment
-TIMEOUT_DURATION_SECOND_VIOLATION = 60  # Seconds for 2nd camera violation timeout
-TIMEOUT_DURATION_THIRD_VIOLATION = 300  # Seconds for 3rd+ camera violation timeout
+AUTO_STATS_HOUR_UTC = 5                 # UTC hour for daily stats
+AUTO_STATS_MINUTE_UTC = 0               # UTC minute for daily stats
+COMMAND_COOLDOWN = 5                    # Button cooldown
+CAMERA_OFF_ALLOWED_TIME = 30            # Seconds allowed without camera
+TIMEOUT_DURATION_SECOND_VIOLATION = 60
+TIMEOUT_DURATION_THIRD_VIOLATION = 300
 ```
 
 ## Running the Bot
 
-1.  **Important**: Close all running instances of the Microsoft Edge browser. This ensures the bot can take control of the user data directory properly.
-2.  Open your command prompt or terminal.
-3.  Navigate to the folder where you saved the bot files using the `cd` command (e.g., `cd C:\Users\YourUser\Desktop\SkipCord`).
-4.  Run the bot using Python:
+1.  **Important**: Close all running instances of Microsoft Edge.
+2.  Open your terminal, navigate to the folder, and run:
     ```
     python bot.py
     ```
-5.  The bot should now start, log its initialization steps in the console, automatically launch Edge, navigate to your configured URL, and set up the interactive menus in Discord.
 
 ### Troubleshooting
 
-  * **Token Error / Login Failure**: Ensure your `.env` file is correctly named (it must be `.env`, not `env.txt`), is in the same folder as `bot.py`, and contains the correct Discord bot token copied from the Developer Portal. Make sure there are no extra spaces.
-  * **Edge Won't Launch / `user data directory is already in use`**: Double-check that **all** Edge browser windows and background processes are completely closed before starting the bot. Verify the `EDGE_USER_DATA_DIR` path in `config.py` is absolutely correct (use forward slashes `/` even on Windows) and points to the *parent* directory of `Default` or `Profile X`.
-  * **"WebDriver" Error / Version Mismatch**: Make sure your Edge browser is fully updated (`edge://settings/help`). Selenium usually downloads the correct driver automatically. If you get persistent errors mentioning version mismatches, you can manually download the correct `msedgedriver.exe` for your specific Edge version from the [Microsoft Edge WebDriver page](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/) and specify its full path (including `msedgedriver.exe`) in `config.py` via the `EDGE_DRIVER_PATH` setting.
-  * **Music Doesn't Play / "FFmpeg not found"**: Confirm that **FFmpeg** is installed correctly and that the folder containing `ffmpeg.exe` is added to your system's `PATH` environment variable. You might need to restart your terminal or PC after updating the PATH. Check `bot.log` for specific FFmpeg errors during playback attempts.
-  * **`yt-dlp` Errors / Music Fails**: The `yt-dlp` library (used for YouTube/Spotify) now requires **Deno**. Make sure you have installed Deno from [deno.land/install](https://www.google.com/url?sa=E&source=gmail&q=https://deno.land/install) and that it is correctly added to your system's `PATH`.
-  * **Spotify Links Fail**: Check your `.env` file to ensure the `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` are correct, copied directly from the Spotify Developer Dashboard, and have no extra spaces.
-  * **VC Connection Errors in `LOG_GC`**: If you see messages about failing to connect, check the bot's permissions in Discord. Ensure it has the "Connect" and "Speak" permissions for the `STREAMING_VC_ID`.
-  * **Buttons Don't Work / Commands Fail**: Check the console output and `bot.log` for any error messages immediately after trying to use a command or button. Ensure you meet the requirements (e.g., in VC with camera on). Check if the user might be command-disabled (`!timeouts`).
-  * **Other Issues**: Check the `bot.log` and `ban.log` files in the bot's folder for detailed error messages. Check the configured `LOG_GC` channel in Discord (if set) for status messages and critical errors.
+  * **Token Error**: Ensure `.env` is named correctly and contains no spaces around the token.
+  * **Edge Won't Launch**: Close all background Edge processes. Verify `EDGE_USER_DATA_DIR` path uses forward slashes `/`.
+  * **Music Fails**: Ensure **FFmpeg** and **Deno** are in your system PATH.
+  * **Spotify Links**: Check Client ID/Secret in `.env`. Note that playlists are limited to 100 tracks in v3.6.
+  * **VC Errors**: Check the `LOG_GC` channel. Ensure the bot has "Connect" and "Speak" permissions.
 
 ### Donations
 
