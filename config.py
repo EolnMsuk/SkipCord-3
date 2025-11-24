@@ -35,6 +35,10 @@ ADMIN_ROLE_NAME = ["Admin", "Moderator"]
 # List of EXACT names of roles that can use the !move command (from streaming vc to punishment vc).
 MOVE_ROLE_NAME = ["Admin", "Moderator"]
 
+# Users need one of these roles to use music commands / buttons
+# Case-sensitive! Example: MUSIC_ROLES = ["Moderator", "Server Admin"]
+MUSIC_ROLES = ["VIP", "God", "Legend"] 
+
 # A set of user IDs to completely exclude from all statistical tracking (VC time, command usage).
 # NOTE: All bots are automatically excluded by the code. This setting is for excluding the omegle host.
 STATS_EXCLUDED_USERS = {}
@@ -191,6 +195,7 @@ GLOBAL_HOTKEY_MVOLDOWN = ""            # The key to trigger the !mvoldown. Uses 
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = ""              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
