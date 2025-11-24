@@ -32,11 +32,11 @@ from tools import BotConfig, BotState
 # --- Constants ---
 
 # Number of retries for initializing the Selenium driver if it fails
-DRIVER_INIT_RETRIES = 2
+DRIVER_INIT_RETRIES = 3
 # Delay in seconds between driver initialization retries
 DRIVER_INIT_DELAY = 5
 # Quality level (1-100) for JPEG screenshots
-SCREENSHOT_JPEG_QUALITY = 100
+SCREENSHOT_JPEG_QUALITY = 60
 
 
 # --- Decorator ---
@@ -272,59 +272,94 @@ class OmegleHandler:
             self.state.relay_command_sent = True 
             logger.info("Processing auto-relay and auto-volume checks...")
 
-        # --- 1. Handle Auto Volume ---
+        # --- SWAPPED ORDER: RELAY FIRST, THEN VOLUME ---
+
+        # --- 1. Handle Auto Relay ---
+        if not self.config.AUTO_RELAY:
+            logger.info("AUTO_RELAY is False. Skipping /relay command.")
+        else:
+            logger.info("AUTO_RELAY is True. Attempting to send /relay command...")
+            try:
+                chat_input_selector = "textarea.messageInput"
+                send_button_xpath = (
+                    "//div[contains(@class, 'mainText') and text()='Send']"
+                )
+
+                def send_relay_command():
+                    """Blocking function to interact with Selenium elements."""
+                    try:
+                        time.sleep(1.0)  # Wait for elements to be stable
+                        chat_input = self.driver.find_element(
+                            "css selector", chat_input_selector
+                        )
+                        chat_input.send_keys("/relay")
+                        time.sleep(0.5)
+                        send_button = self.driver.find_element("xpath", send_button_xpath)
+                        send_button.click()
+                        return True
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not find/interact with chat elements to send /relay. Error: {e}"
+                        )
+                        return False
+
+                relay_sent = await asyncio.to_thread(send_relay_command)
+
+                if relay_sent:
+                    # The flag was already set at the start, so just log success
+                    logger.info("Successfully sent /relay command.")
+                else:
+                    logger.warning("Failed to send /relay command.")
+
+            except Exception as e:
+                logger.error(
+                    f"An unexpected error occurred when trying to send /relay: {e}"
+                )
+
+        # --- 2. Handle Auto Volume ---
         if self.config.AUTO_OMEGLE_VOL:
             logger.info(f"AUTO_OMEGLE_VOL is True. Setting volume to {self.config.OMEGLE_VOL}%.")
             await self._set_volume(volume_percentage=self.config.OMEGLE_VOL)
         else:
             logger.info("AUTO_OMEGLE_VOL is False. Skipping volume set.")
 
-        # --- 2. Handle Auto Relay ---
-        if not self.config.AUTO_RELAY:
-            logger.info("AUTO_RELAY is False. Skipping /relay command.")
-            return True # We're done, and it was "successful" (we did what config said)
+        return True
 
-        logger.info("AUTO_RELAY is True. Attempting to send /relay command...")
-        try:
-            chat_input_selector = "textarea.messageInput"
-            send_button_xpath = (
-                "//div[contains(@class, 'mainText') and text()='Send']"
-            )
+    async def _perform_skip_keys(self, ctx: Optional[commands.Context] = None) -> bool:
+        """Helper to press the skip keys (Esc) on the page."""
+        keys = getattr(config, "SKIP_COMMAND_KEY", None)
+        if not keys:
+            keys = ["Escape", "Escape"]
+        if not isinstance(keys, list):
+            keys = [keys]
 
-            def send_relay_command():
-                """Blocking function to interact with Selenium elements."""
-                try:
-                    time.sleep(1.0)  # Wait for elements to be stable
-                    chat_input = self.driver.find_element(
-                        "css selector", chat_input_selector
-                    )
-                    chat_input.send_keys("/relay")
-                    time.sleep(0.5)
-                    send_button = self.driver.find_element("xpath", send_button_xpath)
-                    send_button.click()
-                    return True
-                except Exception as e:
-                    logger.warning(
-                        f"Could not find/interact with chat elements to send /relay. Error: {e}"
-                    )
-                    return False
-
-            relay_sent = await asyncio.to_thread(send_relay_command)
-
-            if relay_sent:
-                # The flag was already set at the start, so just log success
-                logger.info("Successfully sent /relay command.")
-                return True
-
-        except Exception as e:
-            logger.error(
-                f"An unexpected error occurred when trying to send /relay: {e}"
-            )
-
-        # If we're here, sending /relay failed
-        logger.warning("Failed to send /relay command.")
-        # We don't reset relay_command_sent, it failed and won't be retried until next !refresh
-        return False
+        skip_successful = False
+        for attempt in range(3):
+            try:
+                for i, key in enumerate(keys):
+                    script = f"""
+                    var evt = new KeyboardEvent('keydown', {{
+                        bubbles: true, cancelable: true, key: '{key}', code: '{key}'
+                    }});
+                    document.dispatchEvent(evt);
+                    """
+                    await asyncio.to_thread(self.driver.execute_script, script)
+                    logger.info(f"Selenium: Sent {key} key event to page.")
+                    if i < len(keys) - 1:
+                        await asyncio.sleep(1)
+                skip_successful = True
+                break
+            except StaleElementReferenceException:
+                logger.warning(f"StaleElementReferenceException on skip attempt {attempt + 1}. Retrying...")
+                await asyncio.sleep(0.5)
+                continue
+            except Exception as e:
+                logger.error(f"Selenium custom skip failed: {e}")
+                if ctx:
+                    await ctx.send("Failed to execute skip command in browser.")
+                skip_successful = False
+                break
+        return skip_successful
 
     async def _is_streaming_vc_active(self) -> bool:
         """
@@ -488,8 +523,7 @@ class OmegleHandler:
                 logger.info("Driver initialized, running startup refresh logic...")
                 # --- END: FIX ---
 
-                # Run the !refresh logic on startup. This includes the 5.3s
-                # sleep and the checkbox click logic.
+                # Run the !refresh logic on startup. This includes the delay and the checkbox click logic.
                 await self.refresh(ctx=None)
 
                 # --- Final State Setup ---
@@ -662,109 +696,42 @@ class OmegleHandler:
     @require_healthy_driver
     async def custom_skip(self, ctx: Optional[commands.Context] = None) -> bool:
         """
-        Performs the 'skip' action.
-        If on a /ban/ page, attempts to navigate to the stream.
-        If successful, unbans the state and proceeds.
+        Performs the 'skip' action mechanically.
+        If URL mismatch: Navigates -> Waits 5.3s -> Clicks Checkboxes -> (If Clicked) Waits 5.3s.
+        THEN: Waits 0.5s -> Skips -> Relays immediately.
         """
-        # Get current URL to determine status
         current_url = await asyncio.to_thread(lambda: self.driver.current_url)
-        is_ban_page = "/ban/" in current_url
+        video_url = self.config.OMEGLE_VIDEO_URL
 
-        # Condition: Not on Video URL (covers Redirects AND Bans)
-        if self.config.OMEGLE_VIDEO_URL not in current_url:
-            logger.warning(
-                f"URL Mismatch (Ban={is_ban_page}): Currently at {current_url}. Attempting to navigate..."
-            )
-            if ctx:
-                msg = "Attempting to resolve ban/redirect..." if is_ban_page else "Redirecting to stream..."
-                await ctx.send(msg, delete_after=10)
+        # 1. Ensure we are on the correct video URL
+        if video_url not in current_url:
+            logger.info("Not on video URL. Navigating to video URL...")
+            await asyncio.to_thread(self.driver.get, video_url)
             
-            # 1. Navigate to the correct URL
-            await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
-
-            # --- STATE RESET ---
-            if self.state:
-                async with self.state.moderation_lock:
-                    self.state.relay_command_sent = False
-            # -------------------
-
-            # 2. Verify Navigation (Did we escape the ban?)
-            if is_ban_page:
-                # Allow time for a potential redirect back to /ban/
-                await asyncio.sleep(2.5)
-                check_url = await asyncio.to_thread(lambda: self.driver.current_url)
-                
-                if "/ban/" in check_url:
-                    logger.warning("Navigation failed. Still stuck on /ban/ page.")
-                    # Force a ban check to ensure logs/screenshots are up to date
-                    await self.check_for_ban() 
-                    return False # Stop the command here
-                else:
-                    logger.info("Navigation successful. Ban appears to be lifted.")
-                    # UPDATE STATE: Unban the bot
-                    if self.state:
-                        async with self.state.moderation_lock:
-                            self.state.is_banned = False
-
-            # 3. Wait (Full 'Start-up' wait)
-            logger.info("Navigated to Video URL. Waiting 5.3s for page load/challenges...")
+            # --- DELAY 1: Wait 5.3 seconds BEFORE checking for checkboxes ---
+            logger.info("Waiting 5.3s for load...")
             await asyncio.sleep(5.3)
 
-            # 4. Check for Checkboxes
-            if self.config.CLICK_CHECKBOX:
-                logger.info("Checking for checkboxes (Cloudflare/ToS) after navigation...")
-                await self.find_and_click_checkbox()
-                
-                # 5. Post-Checkbox Wait
-                logger.info("Finished checkbox check. Waiting 5.3s before skipping...")
+            # Scan for and click checkboxes
+            checkboxes_clicked = await self.find_and_click_checkbox()
+
+            # --- DELAY 2: Wait 5.3 seconds AFTER clicking checkboxes (Conditional) ---
+            # This block is skipped entirely if no checkboxes were found/clicked
+            if checkboxes_clicked:
+                logger.info("Checkboxes detected and clicked. Waiting an additional 5.3s...")
                 await asyncio.sleep(5.3)
+        
+        # 2. DELAY 3: User requested 0.5s delay BEFORE the skip keys
+        await asyncio.sleep(0.5)
 
-        # Get skip keys from config
-        keys = getattr(config, "SKIP_COMMAND_KEY", None)
-        if not keys:
-            keys = ["Escape", "Escape"]
-        if not isinstance(keys, list):
-            keys = [keys]
+        # 3. Perform Skip Keys (Esc Esc) - This opens the chat box
+        skip_successful = await self._perform_skip_keys(ctx)
 
-        # Send key presses
-        skip_successful = False
-        for attempt in range(3):
-            try:
-                for i, key in enumerate(keys):
-                    script = f"""
-                    var evt = new KeyboardEvent('keydown', {{
-                        bubbles: true, cancelable: true, key: '{key}', code: '{key}'
-                    }});
-                    document.dispatchEvent(evt);
-                    """
-                    await asyncio.to_thread(self.driver.execute_script, script)
-                    logger.info(f"Selenium: Sent {key} key event to page.")
-                    if i < len(keys) - 1:
-                        await asyncio.sleep(1)
-                skip_successful = True
-                break
-            except StaleElementReferenceException:
-                logger.warning(f"StaleElementReferenceException on skip attempt {attempt + 1}. Retrying...")
-                await asyncio.sleep(0.5)
-                continue
-            except Exception as e:
-                logger.error(f"Selenium custom skip failed: {e}")
-                if ctx:
-                    await ctx.send("Failed to execute skip command in browser.")
-                skip_successful = False
-                break
-
-        # --- BAN CHECK (END) ---
-        # Check URL again before trying to relay, just in case skip triggered a ban
-        final_url = await asyncio.to_thread(lambda: self.driver.current_url)
-        if "/ban/" in final_url:
-            logger.warning("Ban detected at end of skip command. Triggering ban handler.")
-            await self.check_for_ban()
-            return False
-        # -----------------------
-
-        # Always attempt to send /relay after a skip (if not banned)
-        await self._attempt_send_relay()
+        # 4. Perform Relay/Vol Adjust immediately after skipping
+        # Only try this if the skip actually happened
+        if skip_successful:
+            await self._attempt_send_relay()
+        
         return skip_successful
 
     @require_healthy_driver
@@ -773,120 +740,27 @@ class OmegleHandler:
         ctx: Optional[Union[commands.Context, discord.Message, discord.Interaction]] = None,
     ) -> bool:
         """
-        Refreshes the browser page.
-        If on a /ban/ page, attempts to navigate to the stream first.
+        Refreshes the browser page mechanically.
+        Checks for bans are now handled solely by the periodic check_for_ban task.
         """
-        # --- 1. URL Check & Navigation ---
-        try:
-            current_url = await asyncio.to_thread(lambda: self.driver.current_url)
-            is_ban_page = "/ban/" in current_url
-            
-            # Condition: Not on Video URL (Redirects or Bans)
-            if self.config.OMEGLE_VIDEO_URL not in current_url:
-                logger.warning(
-                    f"URL Mismatch during Refresh (Ban={is_ban_page}). currently at {current_url}. Redirecting..."
-                )
-                
-                if ctx:
-                    msg_content = "Browser is on the wrong page. Redirecting to the stream now..."
-                    if isinstance(ctx, discord.Interaction):
-                        if ctx.response.is_done():
-                            await ctx.followup.send(msg_content, delete_after=10)
-                        else:
-                            await ctx.response.send_message(msg_content, delete_after=10)
-                    elif hasattr(ctx, "send"):
-                        await ctx.send(msg_content, delete_after=10)
-                
-                # Navigate to the correct URL
-                await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
-                
-                # If it was a ban, verify we actually left
-                if is_ban_page:
-                    await asyncio.sleep(2.5)
-                    check_url = await asyncio.to_thread(lambda: self.driver.current_url)
-                    if "/ban/" in check_url:
-                        logger.warning("Refresh failed: Still stuck on /ban/ page.")
-                        await self.check_for_ban()
-                        return False
-                    else:
-                        # Unbanned!
-                        logger.info("Navigation successful during refresh. Ban appears lifted.")
-                        if self.state:
-                            async with self.state.moderation_lock:
-                                self.state.is_banned = False
-                else:
-                    # Normal redirect wait
-                    await asyncio.sleep(2.0) 
+        video_url = self.config.OMEGLE_VIDEO_URL
 
-        except Exception as e:
-            logger.error(f"Error checking/navigating URL in refresh: {e}")
-
-        # --- 2. The "Normal" Refresh Stuff ---
-        try:
-            if ctx is not None:
-                logger.info("Selenium: Attempting to refresh the page (F5) via user command.")
-            else:
-                logger.info("Selenium: Attempting to refresh the page (F5) via automated process.")
-            
-            # Run the F5 Refresh
-            await asyncio.to_thread(self.driver.refresh)
-
-            # Reset the relay command flag
-            if self.state:
-                async with self.state.moderation_lock:
-                    self.state.relay_command_sent = False
-                logger.info(
-                    "Relay command armed to be sent on the next skip after refresh."
-                )
-            logger.info("Selenium: Page refreshed successfully.")
-
-            # --- 3. Wait 5.3s and Click Checkboxes ---
-            if self.config.CLICK_CHECKBOX:
-                if ctx is not None:
-                    logger.info(
-                        "User-initiated refresh. Waiting 5.3s to click checkboxes..."
-                    )
-                else:
-                    logger.info(
-                        "Automated refresh. Waiting 5.3s to click checkboxes..."
-                    )
-                
-                await asyncio.sleep(5.3)
-                
-                # Runs the checkbox logic (Cloudflare or Normal)
-                clicked_a_checkbox = await self.find_and_click_checkbox()
-
-                if clicked_a_checkbox:
-                    logger.info("(Refresh) Checkbox was clicked. Awaiting user !skip.")
-                else:
-                    logger.info("(Refresh) No checkbox was clicked (or found). Awaiting user !skip.")
-
-            elif not self.config.CLICK_CHECKBOX:
-                logger.info(
-                    "Refresh complete. CLICK_CHECKBOX is False. Skipping checkbox click."
-                )
-
-            # --- BAN CHECK (END) ---
-            final_url = await asyncio.to_thread(lambda: self.driver.current_url)
-            if "/ban/" in final_url:
-                logger.warning("Ban detected at end of refresh command. Triggering ban handler.")
-                await self.check_for_ban()
-                return False
-            # -----------------------
-
-            return True
-        except Exception as e:
-            logger.error(f"Selenium page refresh failed: {e}")
-            if ctx:
-                error_msg = "Failed to refresh the browser page."
-                if isinstance(ctx, discord.Interaction):
-                    if ctx.response.is_done():
-                        await ctx.followup.send(error_msg)
-                    else:
-                        await ctx.response.send_message(error_msg)
-                elif hasattr(ctx, "send"):
-                    await ctx.send(error_msg)
-            return False
+        # 1. Force Navigation to video_url
+        logger.info(f"Navigating/Refreshing to {video_url}...")
+        await asyncio.to_thread(self.driver.get, video_url)
+        
+        # 2. Wait 5.34 seconds BEFORE checking for checkboxes
+        logger.info("Waiting 5.34s for checkboxes/scripts to load...")
+        await asyncio.sleep(5.34)
+        
+        # 3. Click Checkboxes (Always)
+        await self.find_and_click_checkbox()
+        
+        # Reset relay flag so next skip triggers it
+        if self.state:
+            async with self.state.moderation_lock:
+                self.state.relay_command_sent = False
+        return True
 
     @require_healthy_driver
     async def report_user(self, ctx: Optional[commands.Context] = None) -> bool:
@@ -1247,11 +1121,19 @@ class OmegleHandler:
                             f"Failed to send proactive unbanned notification: {e}"
                         )
 
-            # If we were just unbanned, try to send /relay
+            # If we were just unbanned, execute the requested unban setup sequence
             if was_unbanned:
                 logger.info(
-                    "Unban detected, attempting to send /relay and set volume..."
+                    "Unban detected. Executing setup sequence (Wait 5.3s -> Click Checks -> Relay -> Vol)..."
                 )
+                
+                # 1. Wait 5.3 seconds
+                await asyncio.sleep(5.3)
+                
+                # 2. Click Checkboxes
+                await self.find_and_click_checkbox()
+                
+                # 3. Send /relay then Set Volume (via the modified _attempt_send_relay)
                 await self._attempt_send_relay()
 
         except UnexpectedAlertPresentException:

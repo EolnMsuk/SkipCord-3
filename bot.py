@@ -77,7 +77,7 @@ def get_display_title_from_path(song_path: str) -> str:
         elif raw_title:
             return raw_title
     return os.path.basename(song_path)
-@tasks.loop(minutes=57.31)
+@tasks.loop(minutes=57.222)
 async def periodic_cleanup():
     try:
         await state.clean_old_entries()
@@ -124,10 +124,10 @@ async def load_state_async() -> None:
         helper.state = state
         omegle_handler.state = state
 helper = BotHelper(bot, state, bot_config, save_state_async, lambda: asyncio.create_task(play_next_song()), omegle_handler=omegle_handler, update_menu_func=lambda: asyncio.create_task(update_music_menu()), trigger_repost_func=lambda: asyncio.create_task(_trigger_full_menu_repost()))
-@tasks.loop(minutes=15.33)
+@tasks.loop(minutes=15.333)
 async def periodic_state_save() -> None:
     await save_state_async()
-@tasks.loop(minutes=17.77)
+@tasks.loop(minutes=17.444)
 async def periodic_geometry_save():
     if omegle_handler:
         geometry = await omegle_handler.get_window_geometry()
@@ -138,7 +138,7 @@ async def periodic_geometry_save():
                     if state.window_size != size or state.window_position != position:
                         state.window_size = size
                         state.window_position = position
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=9.1)
 async def capture_screenshots_task():
     if not state.omegle_enabled or state.is_banned or (not omegle_handler):
         return
@@ -146,7 +146,7 @@ async def capture_screenshots_task():
 @capture_screenshots_task.before_loop
 async def before_capture_screenshots_task():
     await bot.wait_until_ready()
-@tasks.loop(seconds=11)
+@tasks.loop(seconds=10.2)
 async def check_ban_status_task():
     if not state.omegle_enabled or not omegle_handler:
         return
@@ -202,7 +202,7 @@ async def auto_delete_old_commands():
 @auto_delete_old_commands.before_loop
 async def before_auto_delete_old_commands():
     await bot.wait_until_ready()
-@tasks.loop(minutes=9.33)
+@tasks.loop(minutes=9.555)
 async def periodic_times_report_update():
     if not hasattr(state, 'times_report_message_id') or not state.times_report_message_id:
         return
@@ -228,7 +228,7 @@ async def periodic_times_report_update():
 async def before_periodic_times_report_update():
     await bot.wait_until_ready()
 
-@tasks.loop(minutes=1.37)
+@tasks.loop(minutes=1.111)
 async def periodic_timeouts_report_update():
     # This helper function already contains all necessary logic:
     # 1. Checks if state.timeouts_report_message_id exists.
@@ -596,12 +596,12 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context]=None):
                 asyncio.create_task(play_next_song()) # Skip to next song
                 return # Stop executing this function
         # --- END OF NEW LOGIC ---
-
-        before_options = '-reconnect 1 -reconnect_delay_max 5'
+        
         ffmpeg_options = {'options': '-vn -loglevel error -nostdin'}
         if is_stream:
             logger.info(f'Processing as a stream: {song_display_name}')
-            ffmpeg_options['before_options'] = before_options
+            # FIX: Use the global FFMPEG_OPTIONS_STREAM constant
+            ffmpeg_options['before_options'] = FFMPEG_OPTIONS_STREAM.get('before_options', '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5')
             try:
                 # *** MODIFIED: Use the (potentially new) stream_url_to_play ***
                 source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(stream_url_to_play, **ffmpeg_options), volume=volume)
@@ -910,11 +910,15 @@ async def _soundboard_grace_protocol(member: discord.Member, config: BotConfig):
                 logger.info(f'Re-applied mute/deafen for {member_after_sleep.name} after soundboard grace period.')
         except Exception as e:
             logger.error(f'Failed to re-mute {member_after_sleep.name} after grace period: {e}')
+            
 async def manage_menu_task_presence():
-    # This function now correctly handles all EMPTY_VC_PAUSE logic.
-    
+    """
+    Manages starting/stopping background tasks based on user presence.
+    Separates 'Menu/Report' tasks (stop immediately on empty) from
+    'Security' tasks (stop after 39s grace period).
+    """
     if not state.omegle_enabled:
-        return # If omegle is off, do nothing.
+        return 
 
     await asyncio.sleep(1.5)
     guild = bot.get_guild(bot_config.GUILD_ID)
@@ -924,74 +928,59 @@ async def manage_menu_task_presence():
     if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel):
         return
     
-    # This is the key logic: are there active users?
     human_listeners_with_cam = [m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice and m.voice.self_video]
 
-    # Get the running state of all relevant tasks
-    is_menu_task_running = periodic_menu_update.is_running()
-    is_screenshot_task_running = capture_screenshots_task.is_running()
-    is_ban_check_task_running = check_ban_status_task.is_running()
-    is_times_report_task_running = periodic_times_report_update.is_running()
-    is_timeouts_report_task_running = periodic_timeouts_report_update.is_running()
-
     # --- STARTING LOGIC ---
-    # We should start (or keep running) tasks if:
-    # 1. There are human listeners OR
-    # 2. EMPTY_VC_PAUSE is False (meaning tasks should always run)
     if human_listeners_with_cam or not bot_config.EMPTY_VC_PAUSE:
-        
         log_reason = "Active user detected" if human_listeners_with_cam else "EMPTY_VC_PAUSE is False"
 
-        if not is_menu_task_running:
-            logger.info(f'Starting periodic menu task. ({log_reason})')
+        # 1. Start Menu/Report Tasks
+        if not periodic_menu_update.is_running():
             periodic_menu_update.start()
-        
-        if not is_screenshot_task_running:
+        if not periodic_times_report_update.is_running():
+            periodic_times_report_update.start()
+        if not periodic_timeouts_report_update.is_running():
+            periodic_timeouts_report_update.start()
+
+        # 2. Start Security Tasks
+        if not capture_screenshots_task.is_running():
             logger.info(f'Starting screenshot capture task. ({log_reason})')
             capture_screenshots_task.start()
-
-        if not is_ban_check_task_running:
+        if not check_ban_status_task.is_running():
             logger.info(f'Starting ban check task. ({log_reason})')
             check_ban_status_task.start()
 
-        if not is_times_report_task_running:
-            logger.info(f'Starting periodic times report task. ({log_reason})')
-            periodic_times_report_update.start()
-
-        if not is_timeouts_report_task_running:
-            logger.info(f'Starting periodic timeouts report task. ({log_reason})')
-            periodic_timeouts_report_update.start()
+        # 3. Cancel Grace Period if active (Users are back!)
+        if state.empty_vc_grace_task and not state.empty_vc_grace_task.done():
+            state.empty_vc_grace_task.cancel()
 
     # --- STOPPING LOGIC ---
-    # We should stop tasks ONLY IF:
-    # 1. There are NO human listeners AND
-    # 2. EMPTY_VC_PAUSE is True
     elif not human_listeners_with_cam and bot_config.EMPTY_VC_PAUSE:
         
-        if is_menu_task_running:
-            logger.info('VC is empty. Stopping periodic menu task.')
+        # 1. Stop Menu/Report Tasks IMMEDIATELY
+        if periodic_menu_update.is_running():
             periodic_menu_update.stop()
-        
-        if is_screenshot_task_running:
-            logger.info('VC is empty. Stopping screenshot capture task.')
-            capture_screenshots_task.stop()
-            # Also clear the screenshot buffer to save memory
-            async with state.screenshot_lock:
-                 if hasattr(state, "ban_screenshots"):
-                    state.ban_screenshots.clear()
-                    logger.info("Cleared in-memory screenshot buffer.")
-
-        if is_ban_check_task_running:
-            logger.info('VC is empty. Stopping ban check task.')
-            check_ban_status_task.stop()
-
-        if is_times_report_task_running:
-            logger.info('VC is empty. Stopping periodic times report task.')
+        if periodic_times_report_update.is_running():
             periodic_times_report_update.stop()
-
-        if is_timeouts_report_task_running:
-            logger.info('VC is empty. Stopping periodic timeouts report task.')
+        if periodic_timeouts_report_update.is_running():
             periodic_timeouts_report_update.stop()
+
+        # 2. Handle Security Tasks (Ban/Screenshots)
+        # Only stop them if the grace task is NOT running (meaning the 39s passed or wasn't scheduled)
+        is_grace_running = state.empty_vc_grace_task and not state.empty_vc_grace_task.done()
+        
+        if not is_grace_running:
+            if capture_screenshots_task.is_running():
+                logger.info('VC is empty and no grace period active. Stopping screenshot task.')
+                capture_screenshots_task.stop()
+                async with state.screenshot_lock:
+                    if hasattr(state, "ban_screenshots"):
+                        state.ban_screenshots.clear()
+
+            if check_ban_status_task.is_running():
+                logger.info('VC is empty and no grace period active. Stopping ban check task.')
+                check_ban_status_task.stop()
+                
 async def init_vc_moderation():
     async with state.vc_lock:
         is_active = state.vc_moderation_active
@@ -1018,6 +1007,44 @@ async def init_vc_moderation():
                 except Exception as e:
                     logger.error(f'Failed to auto mute/deafen {member.name}: {e}')
                 state.camera_off_timers[member.id] = time.time()
+
+
+
+def require_music_preconditions():
+    async def predicate(ctx):
+        # 1. Allow Bot Owners immediately
+        if ctx.author.id in bot_config.ALLOWED_USERS:
+            return True
+
+        # 2. Check global disable list
+        async with state.moderation_lock:
+            if ctx.author.id in state.omegle_disabled_users:
+                await ctx.send('You are currently disabled from using any commands.', delete_after=10)
+                return False
+
+        # 3. Check Command Channel
+        if ctx.channel.id != bot_config.COMMAND_CHANNEL_ID:
+            await ctx.send(f'All commands should be used in <#{bot_config.COMMAND_CHANNEL_ID}>.', delete_after=10)
+            return False
+
+        # 4. Check Camera Status (Existing Rule)
+        if not is_user_in_streaming_vc_with_camera(ctx.author):
+            await ctx.send('You must be in the Streaming VC with your camera on to use commands.', delete_after=10)
+            return False
+
+        # 5. NEW: Check Music Roles
+        if bot_config.MUSIC_ROLES:
+            user_roles = [role.name for role in ctx.author.roles]
+            # Check if user has ANY of the allowed music roles
+            if not any(role in user_roles for role in bot_config.MUSIC_ROLES):
+                roles_str = ", ".join(bot_config.MUSIC_ROLES)
+                await ctx.send(f'⛔ You need one of the following roles to control music: **{roles_str}**', delete_after=10)
+                return False
+
+        return True
+    return commands.check(predicate)
+
+
 @bot.event
 async def on_ready() -> None:
     logger.info(f'Bot is online as {bot.user}')
@@ -1157,6 +1184,35 @@ async def manage_music_presence():
         # Bot is not connected, but users are here. Time to join.
         logger.info('Active user with camera detected and bot is not in VC. Triggering music start.')
         asyncio.create_task(start_music_playback())
+
+async def _graceful_security_shutdown():
+    """
+    Waits 14 seconds, then stops the Ban Check and Screenshot tasks.
+    This allows the bot to keep monitoring for a short time after the VC empties.
+    """
+    try:
+        logger.info("Empty VC detected. Starting 39s grace period before stopping security tasks...")
+        await asyncio.sleep(14)
+        
+        logger.info("Grace period ended. Stopping Ban Check and Screenshot tasks.")
+        if check_ban_status_task.is_running():
+            check_ban_status_task.stop()
+        
+        if capture_screenshots_task.is_running():
+            capture_screenshots_task.stop()
+            # Clear screenshot buffer to save memory
+            async with state.screenshot_lock:
+                if hasattr(state, "ban_screenshots"):
+                    state.ban_screenshots.clear()
+                    logger.info("Cleared in-memory screenshot buffer.")
+                    
+    except asyncio.CancelledError:
+        logger.info("Graceful security shutdown CANCELLED. Users returned to VC.")
+    finally:
+        # Clean up the task reference in state
+        if state.empty_vc_grace_task:
+            state.empty_vc_grace_task = None
+
 @bot.event
 @handle_errors
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
@@ -1164,12 +1220,16 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
     if member.id == bot.user.id or member.bot:
         return
+
+    # --- VC Definitions ---
     moderated_vc_ids = {bot_config.STREAMING_VC_ID, *bot_config.ALT_VC_ID}
     is_in_moderated_vc = lambda ch: ch and ch.id in moderated_vc_ids
     was_in_mod_vc = is_in_moderated_vc(before.channel)
     is_now_in_mod_vc = is_in_moderated_vc(after.channel)
     was_in_streaming_vc = before.channel and before.channel.id == bot_config.STREAMING_VC_ID
     is_now_in_streaming_vc = after.channel and after.channel.id == bot_config.STREAMING_VC_ID
+
+    # --- Time Tracking Logic ---
     async with state.vc_lock:
         if is_now_in_streaming_vc and (not was_in_streaming_vc):
             if member.id not in state.active_vc_sessions:
@@ -1185,28 +1245,37 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     state.vc_time_data[member.id]['total_time'] += duration
                     state.vc_time_data[member.id]['sessions'].append({'start': start_time, 'end': time.time(), 'duration': duration, 'vc_name': before.channel.name})
                     logger.info(f"VC Time Tracking: '{member.display_name}' ended session, adding {duration:.1f}s.")
+
+    # --- Moderation Logic ---
     is_mod_active = state.vc_moderation_active
-    is_hush_active = state.hush_override_active
     if is_mod_active:
         if is_now_in_mod_vc and (not was_in_mod_vc):
+            # User Joined a Moderated VC
             if is_now_in_streaming_vc:
                 logger.info(f'VC JOIN: {member.display_name} ({member.name} | ID: {member.id}).')
                 asyncio.create_task(_handle_stream_vc_join(member))
                 if member.id not in bot_config.ALLOWED_USERS:
                     asyncio.create_task(_join_camera_failsafe_check(member, bot_config))
+            
             if member.id not in bot_config.ALLOWED_USERS:
                 async with state.vc_lock:
                     state.camera_off_timers[member.id] = time.time()
                     logger.info(f"Started camera grace period timer for '{member.display_name}'.")
                 asyncio.create_task(_soundboard_grace_protocol(member, bot_config))
+        
         elif was_in_mod_vc and (not is_now_in_mod_vc):
+            # User Left a Moderated VC
             if was_in_streaming_vc:
                 logger.info(f'VC LEAVE: {member.display_name} ({member.name} | ID: {member.id}).')
+
         elif was_in_mod_vc and is_now_in_mod_vc:
+            # User Switched / Changed State in Moderated VC
             if before.channel.id == bot_config.STREAMING_VC_ID and after.channel.id != bot_config.STREAMING_VC_ID:
                 logger.info(f'VC SWITCH: {member.display_name} ({member.name} | ID: {member.id}).')
+            
             camera_turned_on = not before.self_video and after.self_video
             camera_turned_off = before.self_video and (not after.self_video)
+            
             if member.id not in bot_config.ALLOWED_USERS:
                 if camera_turned_off:
                     async with state.vc_lock:
@@ -1226,18 +1295,23 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                             logger.info(f"Auto-unmuted '{member.display_name}' after turning camera on.")
                         except Exception as e:
                             logger.error(f"Failed to auto-unmute '{member.display_name}': {e}")
+
+    # --- Omegle Automation Logic ---
     is_relevant_event = was_in_streaming_vc or is_now_in_streaming_vc
     if is_relevant_event and state.omegle_enabled and (not state.is_banned):
+        # Calculate active camera users
         if is_now_in_streaming_vc:
             cam_users_after_count = len([m for m in after.channel.members if m.voice and m.voice.self_video and (not m.bot) and (m.id not in bot_config.ALLOWED_USERS)])
         elif was_in_streaming_vc and (not is_now_in_streaming_vc):
             cam_users_after_count = len([m for m in before.channel.members if m.voice and m.voice.self_video and (not m.bot) and (m.id not in bot_config.ALLOWED_USERS)])
         else:
             cam_users_after_count = 0
+        
         camera_turned_on = is_now_in_streaming_vc and (not before.self_video) and after.self_video
         camera_turned_off = was_in_streaming_vc and before.self_video and (not after.self_video)
         joined_with_cam = not was_in_streaming_vc and is_now_in_streaming_vc and after.self_video
         left_with_cam = was_in_streaming_vc and (not is_now_in_streaming_vc) and before.self_video
+        
         cam_users_before_count = cam_users_after_count
         if member.id not in bot_config.ALLOWED_USERS:
             if camera_turned_on or joined_with_cam:
@@ -1245,6 +1319,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             elif camera_turned_off or left_with_cam:
                 cam_users_before_count += 1
         cam_users_before_count = max(0, cam_users_before_count)
+
+        # 1. Auto Start (Skip) Logic
         if bot_config.AUTO_VC_START and cam_users_before_count == 0 and (cam_users_after_count > 0):
             logger.info(f'Auto Skip: Camera users went from 0 to {cam_users_after_count}. Triggering skip command.')
             await omegle_handler.custom_skip()
@@ -1253,32 +1329,33 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     await command_channel.send('Stream automatically started')
                 except Exception as e:
                     logger.error(f'Failed to send auto-skip notification: {e}')
-        
-        # --- THIS IS THE UPDATED BLOCK ---
+
+        # 2. Auto Stop (Refresh) Logic
         if bot_config.EMPTY_VC_PAUSE and cam_users_before_count > 0 and (cam_users_after_count == 0):
-            # This is the "last user left" trigger.
-            # We must check if the bot is already in a paused state.
-            # We use `state.relay_command_sent` as the flag:
-            #   - True:  A !skip has happened. The bot is "live". We need to pause.
-            #   - False: No !skip has happened. The bot is "already paused". Do nothing.
-            
-            is_bot_live = False # Assume paused
-            if state: # Check if state exists
+            # Pause the Stream (!refresh) if the bot was "live" (relay sent)
+            is_bot_live = False
+            if state:
                 async with state.moderation_lock:
                     is_bot_live = state.relay_command_sent
             
             if is_bot_live:
-                logger.info(f'Auto Refresh: Last camera user left (Before: {cam_users_before_count}, After: 0). Bot is live, sending pause command.')
+                logger.info(f'Auto Refresh: Last camera user left. Bot is live, sending pause command.')
                 await omegle_handler.refresh()
                 if (command_channel := member.guild.get_channel(bot_config.COMMAND_CHANNEL_ID)):
                     try:
                         await command_channel.send('Stream automatically paused')
                     except Exception as e:
                         logger.error(f'Failed to send auto-refresh notification: {e}')
-            else:
-                logger.info(f'Auto Refresh: Last camera user left (Before: {cam_users_before_count}, After: 0), but bot is already in a paused state. No refresh sent.')
-        # --- END OF UPDATED BLOCK ---
+            
+            # Start the 39s Grace Period for Security Tasks
+            # Cancel existing task if somehow running to reset timer
+            if state.empty_vc_grace_task and not state.empty_vc_grace_task.done():
+                state.empty_vc_grace_task.cancel()
+            
+            # _graceful_security_shutdown must be defined in bot.py
+            state.empty_vc_grace_task = asyncio.create_task(_graceful_security_shutdown())
 
+    # --- Punishment VC Cleanup ---
     if after.channel and after.channel.id == bot_config.PUNISHMENT_VC_ID:
         if member.voice and (member.voice.mute or member.voice.deaf):
             try:
@@ -1286,13 +1363,17 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 logger.info(f"Automatically unmuted/undeafened '{member.display_name}' in Punishment VC.")
             except Exception as e:
                 logger.error(f"Failed to unmute/undeafen '{member.display_name}' in Punishment VC: {e}")
+
+    # --- Trigger Presence Checks ---
     is_event_in_streaming_vc = before.channel and before.channel.id == bot_config.STREAMING_VC_ID or (after.channel and after.channel.id == bot_config.STREAMING_VC_ID)
     if is_event_in_streaming_vc:
         asyncio.create_task(manage_music_presence())
         asyncio.create_task(manage_menu_task_presence())
+
 @bot.event
 @handle_errors
 async def on_member_update(before: discord.Member, after: discord.Member) -> None:
+    # --- 1. Handle Role Changes ---
     if before.roles != after.roles:
         roles_gained = [role for role in after.roles if role not in before.roles and role.name != '@everyone']
         roles_lost = [role for role in before.roles if role not in after.roles and role.name != '@everyone']
@@ -1304,8 +1385,10 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
                 embed = await build_role_update_embed(after, roles_gained, roles_lost)
                 await channel.send(embed=embed)
                 
+    # --- 2. Handle Timeout Changes ---
     if before.is_timed_out() != after.is_timed_out():
         if after.is_timed_out():
+            # --- TIMEOUT ADDED ---
             # This 'if' block runs when a timeout is ADDED
             async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
                 if entry.target.id == after.id and hasattr(entry.after, 'timed_out_until') and (entry.after.timed_out_until is not None):
@@ -1317,6 +1400,7 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
                     asyncio.create_task(helper.update_timeouts_report_menu()) # Assumes helper.update_timeouts_report_menu() exists
                     break
         else:
+            # --- TIMEOUT REMOVED ---
             # This 'else' block runs when a timeout is REMOVED
             async with state.moderation_lock:
                 if after.id in state.pending_timeout_removals:
@@ -1329,17 +1413,30 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
                 reason = 'Timeout Expired Naturally'
 
                 try:
-                    # THIS IS THE FIX: Wait 2s for the audit log to populate (for manual removals)
-                    await asyncio.sleep(2.0) 
+                    # INCREASED WAIT: Give Discord API more time to write the log
+                    await asyncio.sleep(3.5) 
                     
-                    # Check the log ONCE (no loop)
-                    async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update, after=datetime.now(timezone.utc) - timedelta(seconds=15)):
-                        if entry.target.id == after.id and getattr(entry.before, 'timed_out_until') is not None and (getattr(entry.after, 'timed_out_until') is None):
-                            # Found a manual removal log
-                            moderator_name = entry.user.name
-                            moderator_id = entry.user.id
-                            reason = f'Manually removed by 🛡️ {moderator_name}'
-                            break 
+                    # IMPROVED FETCH: 
+                    # 1. Increased limit to 20 to catch it in busy servers.
+                    # 2. Removed 'after=' param to prevent clock skew issues.
+                    # 3. Added a manual check for 'entry.created_at' to ensure we don't grab old logs.
+                    async for entry in after.guild.audit_logs(limit=20, action=discord.AuditLogAction.member_update):
+                        
+                        # Check if this log is for the user we are checking
+                        if entry.target.id == after.id:
+                            
+                            # Check if this log is specifically for REMOVING a timeout
+                            # (before had a date, after is None)
+                            if getattr(entry.before, 'timed_out_until', None) is not None and getattr(entry.after, 'timed_out_until', None) is None:
+                                
+                                # Check if the log happened recently (within the last 30 seconds)
+                                # This ensures we don't accidentally grab an old manual removal
+                                time_diff = datetime.now(timezone.utc) - entry.created_at
+                                if time_diff.total_seconds() < 30:
+                                    moderator_name = entry.user.name
+                                    moderator_id = entry.user.id
+                                    reason = f'Manually removed by 🛡️ {moderator_name}'
+                                    break
                 except discord.Forbidden:
                     logger.warning('Cannot check audit logs for un-timeout (Missing Permissions).')
                 except Exception as e:
@@ -1434,7 +1531,7 @@ async def _trigger_full_menu_repost():
             logger.info('Successfully completed triggered full menu repost.')
         except Exception as e:
             logger.error(f'Error during triggered menu repost: {e}', exc_info=True)
-@tasks.loop(minutes=721.17)
+@tasks.loop(minutes=9.31)
 async def periodic_menu_update() -> None:
     if state.menu_repost_lock.locked():
         logger.info('Periodic menu update skipped: Repost lock is currently held.')
@@ -1642,8 +1739,13 @@ async def music_playback_watchdog():
         is_processing = state.is_processing_song
     if human_listeners_with_cam and is_bot_connected:
         if not bot.voice_client_music.is_playing() and (not bot.voice_client_music.is_paused()) and (not is_processing):
-            logger.warning('Watchdog: Bot is connected but idle with listeners present. Force-starting playback.')
-            await start_music_playback()
+            # FIX: Check if we actually have content to play to avoid infinite loop
+            async with state.music_lock:
+                has_content = bool(state.all_songs or state.shuffle_queue or state.active_playlist or state.search_queue)
+            
+            if has_content:
+                logger.warning('Watchdog: Bot is connected but idle with listeners present. Force-starting playback.')
+                await start_music_playback()
 @music_playback_watchdog.before_loop
 async def before_music_watchdog():
     await bot.wait_until_ready()
@@ -1792,7 +1894,7 @@ async def is_song_in_queue(state: BotState, song_path_or_url: str) -> bool:
             return True
     return False
 @bot.command(name='mpauseplay', aliases=['mpp'])
-@require_user_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def mpauseplay(ctx):
     if not state.music_enabled:
@@ -1823,7 +1925,7 @@ async def mpauseplay(ctx):
     else:
         asyncio.create_task(update_music_menu())
 @bot.command(name='mskip')
-@require_user_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def mskip(ctx):
     if not state.music_enabled:
@@ -1878,7 +1980,7 @@ def extract_youtube_url(query: str) -> Optional[str]:
         return f'https://www.youtube.com/watch?v={video_id}'
     return None
 @bot.command(name='msearch', aliases=['m'])
-@require_user_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def msearch(ctx, *, query: str):
     if not state.music_enabled:
@@ -1905,19 +2007,22 @@ async def msearch(ctx, *, query: str):
             tracks_to_search = []
             
             # --- NEW: Define a max limit for playlists to prevent abuse ---
-            MAX_PLAYLIST_TRACKS = 200
+            MAX_PLAYLIST_TRACKS = 100
 
             if '/track/' in clean_query:
-                track_info = sp.track(clean_query)
+                # FIX: Async wrapper
+                track_info = await asyncio.to_thread(sp.track, clean_query)
                 if track_info:
                     tracks_to_search.append(track_info)
             elif '/album/' in clean_query:
-                results = sp.album_tracks(clean_query)
+                # FIX: Async wrapper
+                results = await asyncio.to_thread(sp.album_tracks, clean_query)
                 if results:
                     tracks_to_search.extend(results['items'])
             elif '/playlist/' in clean_query:
                 # --- MODIFIED: Fetch in pages of 50 ---
-                results = sp.playlist_tracks(clean_query, limit=50)
+                # FIX: Async wrapper
+                results = await asyncio.to_thread(sp.playlist_tracks, clean_query, limit=50)
                 if results:
                     while results:
                         # Add the tracks from this page
@@ -1931,7 +2036,8 @@ async def msearch(ctx, *, query: str):
                             results = None # Stop the loop
                         elif results['next']:
                             logger.debug(f"Fetching next page of Spotify playlist... (current count: {len(tracks_to_search)})")
-                            results = sp.next(results) # Get next page
+                            # FIX: Async wrapper
+                            results = await asyncio.to_thread(sp.next, results) # Get next page
                         else:
                             results = None # No more pages
 
@@ -2277,7 +2383,7 @@ async def msearch(ctx, *, query: str):
     content_msg = f'Found {len(all_hits)} results. Select a song to add:'
     view.message = await status_msg.edit(content=content_msg, view=view)
 @bot.command(name='mclear')
-@require_user_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def mclear(ctx):
     if not state.music_enabled:
@@ -2287,7 +2393,7 @@ async def mclear(ctx):
         await announce_command_usage(ctx, f'!{ctx.invoked_with}')
         await helper.confirm_and_clear_music_queue(ctx)
 @bot.command(name='mshuffle')
-@require_user_preconditions()
+@require_allowed_user()
 @handle_errors
 async def mshuffle(ctx):
     if not state.music_enabled:
@@ -2309,7 +2415,7 @@ async def mshuffle(ctx):
     logger.info(f'Music mode set to {new_mode} by {ctx.author.name}')
     asyncio.create_task(update_music_menu())
 @bot.command(name='nowplaying', aliases=['np'])
-@require_user_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def nowplaying(ctx):
     if not state.music_enabled:
@@ -2319,7 +2425,7 @@ async def nowplaying(ctx):
     record_command_usage_by_user(state.analytics, ctx.author.id, '!nowplaying')
     await helper.show_now_playing(ctx)
 @bot.command(name='queue', aliases=['q'])
-@require_user_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def queue(ctx):
     if not state.music_enabled:
@@ -2330,7 +2436,7 @@ async def queue(ctx):
     record_command_usage_by_user(state.analytics, ctx.author.id, command_name)
     await helper.show_queue(ctx)
 @bot.group(name='playlist', invoke_without_command=True)
-@require_user_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def playlist(ctx):
     if not state.music_enabled:
@@ -2546,7 +2652,7 @@ async def enablenotifications(ctx):
     logger.info(f'Notifications ENABLED by {ctx.author.name}')
     asyncio.create_task(save_state_async())
 @bot.command(name='moff')
-@require_admin_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def moff(ctx):
     if not state.music_enabled:
@@ -2588,7 +2694,7 @@ async def moff(ctx):
     await ctx.send('❌ Music features have been **DISABLED** and the player has been disconnected.')
     asyncio.create_task(save_state_async())
 @bot.command(name='mon')
-@require_admin_preconditions()
+@require_music_preconditions()
 @handle_errors
 async def mon(ctx):
     if state.music_enabled:

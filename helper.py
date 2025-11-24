@@ -172,6 +172,35 @@ async def _button_callback_handler(
                     ephemeral=True,
                 )
             return
+# --- NEW: Permission Checks for Restricted Commands ---
+        
+        # 1. !report (Admin Only)
+        if command == "!report":
+            is_allowed = user_id in bot_config.ALLOWED_USERS
+            is_admin_role = False
+            if isinstance(user_member, discord.Member):
+                is_admin_role = any(role.name in bot_config.ADMIN_ROLE_NAME for role in user_member.roles)
+            
+            if not (is_allowed or is_admin_role):
+                msg = "⛔ You do not have permission to use this button."
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await interaction.followup.send(msg, ephemeral=True)
+                return
+
+        # 2. !mshuffle (Owner Only)
+        if command == "!mshuffle":
+            if user_id not in bot_config.ALLOWED_USERS:
+                msg = "⛔ This button is restricted to Bot Owners."
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await interaction.followup.send(msg, ephemeral=True)
+                return
+
+        # --- Check 3: Camera On (if required) ---
+        # (Existing code continues here...)
 
         # --- Check 3: Camera On (if required) ---
         if user_id not in bot_config.ALLOWED_USERS:
@@ -199,6 +228,20 @@ async def _button_callback_handler(
                     )
                 if not is_in_vc_with_cam:
                     msg = "You must be in the Streaming VC with your camera on to use this button."
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(msg, ephemeral=True)
+                    else:
+                        await interaction.followup.send(msg, ephemeral=True)
+                    return
+
+            # --- NEW: Check 3.5: Music Roles (for Music Buttons) ---
+            music_commands = ["!mpauseplay", "!mskip", "!mshuffle", "!mclear"]
+            if command in music_commands and bot_config.MUSIC_ROLES:
+                user_roles = [r.name for r in user_member.roles]
+                if not any(role in user_roles for role in bot_config.MUSIC_ROLES):
+                    roles_str = ", ".join(bot_config.MUSIC_ROLES)
+                    msg = f"⛔ You need one of the following roles to control music: **{roles_str}**"
+                    
                     if not interaction.response.is_done():
                         await interaction.response.send_message(msg, ephemeral=True)
                     else:
@@ -380,7 +423,6 @@ async def _button_callback_handler(
             logger.error(
                 f"Failed to send final error message for button callback: {final_err}"
             )
-
 
 class HelpButton(Button):
     """A custom button for the Omegle Help View."""
@@ -781,14 +823,15 @@ class BotHelper:
                 except Exception as e:
                     logger.error(f"Failed to send leave notification to LOG_GC: {e}")
             
-            # Always send to CHAT_CHANNEL
-            if chat_channel:
+            # FIX: Only send to CHAT_CHANNEL if it's distinct from LOG_GC or if we didn't send there
+            sent_to_log = is_highlight_event and log_channel
+            should_send_to_chat = chat_channel and (not sent_to_log or chat_channel.id != log_channel.id)
+
+            if should_send_to_chat:
                 try:
                     await chat_channel.send(embed=embed)
                 except discord.Forbidden:
                     logger.warning(f"Failed to send leave notification to CHAT_CHANNEL: Missing permissions.")
-                except Exception as e:
-                    logger.error(f"Failed to send leave notification to CHAT_CHANNEL: {e}")
             
         logger.info(f"Processed a batch of {count} member departures. Highlight: {is_highlight_event}")
 
@@ -1131,6 +1174,9 @@ class BotHelper:
                     logger.debug(
                         "Triggered state save after adding ban ID to fix race condition."
                     )
+                    
+            asyncio.create_task(self.update_timeouts_report_menu())        
+            
         except Exception as state_e:
             logger.critical(
                 f"CRITICAL: Failed to update state in handle_member_ban for {user.name}: {state_e}",
@@ -1157,8 +1203,6 @@ class BotHelper:
         )
         await self.send_unban_notification(user, self.bot.user)
 
-    # helper.py
-
     @handle_errors
     async def handle_member_remove(self, member: discord.Member) -> None:
         """
@@ -1178,22 +1222,48 @@ class BotHelper:
 
         # --- Check 1: Was this a BAN? ---
         async with self.state.moderation_lock:
-            if member.id in self.state.recently_banned_ids:
-                # ... (ban logic remains unchanged) ...
-                return
+            is_banned = member.id in self.state.recently_banned_ids
+        
+        if is_banned:
+            # It was a ban. Fetch audit log to get the moderator and reason.
+            # We do this here (instead of handle_member_ban) to ensure we have the full context
+            try:
+                found_ban_entry = False
+                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban):
+                    if entry.target.id == member.id:
+                        found_ban_entry = True
+                        reason = entry.reason or "No reason provided"
+                        embed = await self._create_departure_embed(
+                            member, entry.user, reason, "BANNED", discord.Color.red()
+                        )
+                        
+                        async with self.state.moderation_lock:
+                            notifications_are_enabled = self.state.notifications_enabled
+
+                        if notifications_are_enabled:
+                            await chat_channel.send(embed=embed)
+                        
+                        logger.info(f"Processed departure for {member.name} as BAN.")
+                        break
+                
+                if not found_ban_entry:
+                    # Fallback if audit log is too slow or missing (uses data from handle_member_ban state if available)
+                    logger.warning(f"Ban detected for {member.name} via state, but audit log entry was elusive.")
+                    # You could optionally send a generic ban message here if you wish
+            
+            except Exception as e:
+                logger.error(f"Error processing ban notification in remove handler: {e}")
+
+            # CRITICAL: We return here so we don't process this as a 'kick' or 'leave' below
+            return
 
         # --- Check 2: Was this a KICK? ---
         try:
             async for entry in guild.audit_logs(
-                limit=3,
+                limit=20,  # FIX: Increased from 3 to 20 to prevent missing logs in busy servers
                 action=discord.AuditLogAction.kick,
                 after=member.joined_at or datetime.now(timezone.utc) - timedelta(minutes=5),
             ):
-                # We remove the time_difference calculation and check.
-                # The 'after=member.joined_at' filter is the primary guard
-                # against processing old, unrelated kick logs.
-                # The 4-second sleep at the start of the function combined
-                # with API lag can cause the 15-second window to be missed.
                 if (
                     entry.target
                     and entry.target.id == member.id
@@ -1250,7 +1320,7 @@ class BotHelper:
             "name": member.name,
             "avatar_url": member.display_avatar.url,
             "joined_at": member.joined_at,
-            "roles_list": roles_list, # <-- UPDATED
+            "roles_list": roles_list,
         }
 
         # Add to state and schedule the batch processor
@@ -1261,7 +1331,7 @@ class BotHelper:
                     member.name,
                     member.display_name,
                     datetime.now(timezone.utc),
-                    role_string_for_db, # <-- Use formatted string for DB
+                    role_string_for_db,
                 )
             )
             if self.state.leave_batch_task:
@@ -1297,14 +1367,22 @@ class BotHelper:
 
     @handle_errors
     async def show_bans(self, ctx) -> None:
-        """!bans command implementation."""
+        """!bans command implementation (Sorted Alphabetically by Username)."""
         record_command_usage(self.state.analytics, "!bans")
         record_command_usage_by_user(self.state.analytics, ctx.author.id, "!bans")
         
+        # 1. Fetch bans
+        # We use a status message because fetching a large ban list can take a second
+        status_msg = await ctx.send("⏳ Fetching ban list...")
+        
         ban_entries = [entry async for entry in ctx.guild.bans()]
         if not ban_entries:
-            await ctx.send("No users are currently banned.")
+            await status_msg.edit(content="No users are currently banned.")
             return
+
+        # 2. Sort alphabetically by username (Case-Insensitive)
+        # We use .lower() so 'Zebra' doesn't come before 'apple'
+        ban_entries.sort(key=lambda entry: entry.user.name.lower())
 
         def process_ban(entry):
             user = entry.user
@@ -1318,6 +1396,14 @@ class BotHelper:
             as_embed=True,
             embed_color=discord.Color.red(),
         )
+        
+        # 3. Clean up the status message
+        try:
+            await status_msg.delete()
+        except discord.NotFound:
+            pass
+
+        # 4. Send the sorted pages
         for embed in embeds:
             await ctx.send(embed=embed)
 
@@ -1555,7 +1641,7 @@ class BotHelper:
             "`!secret` - Server-mutes and deafens all non-admin users.\n"
             "`!rsecret` / `!removesecret` - Removes mute/deafen from all users.\n"
             "`!modoff` / `!modon` - Toggles automated VC moderation.\n"
-            "`!disablenotifications` / `!enablenotifications` - Toggles event notifications.\n"
+            "`!disablenotifications` / `!enablenotifications` - Toggles notifications.\n"
             "`!ban <user>` - Bans user(s) with a reason prompt.\n"
             "`!unban <user_id>` - Unbans a user by ID.\n"
             "`!unbanall` - Unbans every user from the server.\n"
@@ -1607,6 +1693,11 @@ class BotHelper:
         # --- Gather Data (Locked) ---
         async with self.state.moderation_lock:
             time_filter = now - timedelta(hours=24)
+            
+            # --- ADD THIS LINE BELOW ---
+            timeout_data = self.state.active_timeouts.copy() 
+            # ---------------------------
+
             timed_out_members = [
                 member for member in ctx.guild.members if member.is_timed_out()
             ]

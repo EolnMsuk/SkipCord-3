@@ -17,7 +17,6 @@ from loguru import logger
 # Remove default logger to configure our own
 logger.remove()
 
-
 def patch_record(record):
     """
     Patcher function for Loguru to rename a noisy function in the logs.
@@ -376,6 +375,7 @@ class BotConfig:
     ALLOWED_USERS: Set[int]
     ADMIN_ROLE_NAME: List[str]
     MOVE_ROLE_NAME: List[str]
+    MUSIC_ROLES: List[str]
     STATS_EXCLUDED_USERS: Set[int]
 
     # --- Bot Behavior ---
@@ -455,6 +455,7 @@ class BotConfig:
             ALLOWED_USERS=getattr(config_module, "ALLOWED_USERS", set()),
             ADMIN_ROLE_NAME=getattr(config_module, "ADMIN_ROLE_NAME", []),
             MOVE_ROLE_NAME=getattr(config_module, "MOVE_ROLE_NAME", []),
+            MUSIC_ROLES=getattr(config_module, "MUSIC_ROLES", []),
             STATS_EXCLUDED_USERS=getattr(
                 config_module, "STATS_EXCLUDED_USERS", set()
             ),
@@ -655,7 +656,8 @@ class BotState:
     relay_command_sent: bool = False
     leave_buffer: List[dict] = field(default_factory=list, init=False)
     leave_batch_task: Optional[asyncio.Task] = field(default=None, init=False)
-
+    empty_vc_grace_task: Optional[asyncio.Task] = field(default=None, init=False)
+    
     # --- History (for !whois) ---
     recent_joins: JoinHistory = field(default_factory=list)
     recent_leaves: LeaveHistory = field(default_factory=list)
