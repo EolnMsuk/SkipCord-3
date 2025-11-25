@@ -18,7 +18,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Smart Auto-Pause & Graceful Shutdown**: Triggers a refresh *only* when the last user leaves. Includes a **14-second grace period** prevents the bot from rapidly toggling security tasks if a user rejoins quickly.
   * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
 
-  <img width="438" height="985" alt="menus" src="https://github.com/user-attachments/assets/436c458a-f9f4-40fe-a44b-66a48abb9aa5" />
+<img width="355" height="250" alt="omegle" src="https://github.com/user-attachments/assets/d82200d1-1700-4dc0-95b0-37efac028d5d" />
 
 ### 🔔 Notification System
 
@@ -26,6 +26,8 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **Rich Moderation Logs**: Real-time, color-coded embeds for bans, kicks, timeouts, and Punishment VC moves, fetching reason and moderator details automatically from the audit logs.
 * **New Member Intel**: Join alerts include account creation dates to instantly spot potential alt accounts.
 * **Easy Toggles**: Enable or disable event logging instantly with `!enablenotifications` / `!disablenotifications`.
+
+<img width="445" height="493" alt="noti" src="https://github.com/user-attachments/assets/e6392765-2ac3-4fde-90af-fff38c6324cc" />
 
 ### 🎵 Integrated Music System
 
@@ -36,6 +38,8 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Persistent Playlists**: Save/Load/Delete named playlists.
   * **Watchdog**: Ensures music playback automatically resumes if it stalls while listeners are present.
 
+<img width="420" height="297" alt="music" src="https://github.com/user-attachments/assets/31383d5b-72f8-449a-8aad-c671433e8795" />
+
 ### 🛡️ Advanced Moderation & Automation
 
   * **Camera & Deafen Enforcement**: Automatically mutes/deafens users without cameras in moderated VCs. **New in v3.7:** Now also tracks and punishes users who remain **self-deafened** for longer than the allowed time (default 300s).
@@ -43,12 +47,15 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the screenshots locally, **posts them to a Discord channel**, and logs details to a dedicated `ban.log`.
   * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time/usage statistics.
 
-<img width="1398" height="1054" alt="console" src="https://github.com/user-attachments/assets/3769c9ba-ce6d-4884-a2be-1386f203ddfd" />
+<img width="349" height="406" alt="times" src="https://github.com/user-attachments/assets/d83a3904-a4ce-4389-ad31-00b285a8393b" />
+<img width="344" height="160" alt="mod" src="https://github.com/user-attachments/assets/080d9b66-4ca6-4db8-a18e-17a251b4a4ef" />
 
 ### 📊 Persistent State & Analytics
 
   * **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, window geometry, and menu message IDs—is saved to `data.json`.
   * **VC Time Tracking**: Tracks cumulative time users spend in moderated voice channels, with daily leaderboards (`!times`).
+
+<img width="1398" height="1054" alt="console" src="https://github.com/user-attachments/assets/57282cf1-5bd9-4094-b197-abd1b9f7b029" />
 
 ## 📋 Command List
 
