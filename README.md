@@ -55,7 +55,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, window geometry, and menu message IDs—is saved to `data.json`.
   * **VC Time Tracking**: Tracks cumulative time users spend in moderated voice channels, with daily leaderboards (`!times`).
 
-<img width="1398" height="1054" alt="console" src="https://github.com/user-attachments/assets/57282cf1-5bd9-4094-b197-abd1b9f7b029" />
+<img width="1102" height="1084" alt="console" src="https://github.com/user-attachments/assets/0c700861-f7e8-46ed-9527-c769d74a349f" />
 
 ## 📋 Command List
 
