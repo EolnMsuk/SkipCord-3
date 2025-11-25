@@ -18,7 +18,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Smart Auto-Pause & Graceful Shutdown**: Triggers a refresh *only* when the last user leaves. Includes a **14-second grace period** prevents the bot from rapidly toggling security tasks if a user rejoins quickly.
   * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
 
-<img width="355" height="250" alt="omegle" src="https://github.com/user-attachments/assets/d82200d1-1700-4dc0-95b0-37efac028d5d" />
+<img width="355" height="250" alt="omegle" src="https://github.com/user-attachments/assets/0acbceb4-0e08-46ad-85c6-0c6e6beb5702" />
 
 ### 🔔 Notification System
 
@@ -27,7 +27,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
 * **New Member Intel**: Join alerts include account creation dates to instantly spot potential alt accounts.
 * **Easy Toggles**: Enable or disable event logging instantly with `!enablenotifications` / `!disablenotifications`.
 
-<img width="445" height="493" alt="noti" src="https://github.com/user-attachments/assets/e6392765-2ac3-4fde-90af-fff38c6324cc" />
+<img width="400" height="512" alt="noti" src="https://github.com/user-attachments/assets/3cfd9df8-5b80-4781-af40-576fcfc41b29" />
 
 ### 🎵 Integrated Music System
 
@@ -38,7 +38,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Persistent Playlists**: Save/Load/Delete named playlists.
   * **Watchdog**: Ensures music playback automatically resumes if it stalls while listeners are present.
 
-<img width="420" height="297" alt="music" src="https://github.com/user-attachments/assets/31383d5b-72f8-449a-8aad-c671433e8795" />
+<img width="420" height="297" alt="music" src="https://github.com/user-attachments/assets/ce872a83-4f0e-46f0-90e5-4ab7de2a7cb0" />
 
 ### 🛡️ Advanced Moderation & Automation
 
@@ -47,15 +47,16 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   * **Automatic Ban Handling**: Periodically captures browser screenshots. When a ban is detected, it saves the screenshots locally, **posts them to a Discord channel**, and logs details to a dedicated `ban.log`.
   * **Daily Auto-Stats**: Posts a full analytics report (`!stats`) daily at a configured UTC time, then automatically clears VC time/usage statistics.
 
-<img width="349" height="406" alt="times" src="https://github.com/user-attachments/assets/d83a3904-a4ce-4389-ad31-00b285a8393b" />
-<img width="344" height="160" alt="mod" src="https://github.com/user-attachments/assets/080d9b66-4ca6-4db8-a18e-17a251b4a4ef" />
+<img width="349" height="406" alt="times" src="https://github.com/user-attachments/assets/e4b23692-5e5c-422e-b7c6-bf7282aa668b" /> 
+ 
+<img width="344" height="160" alt="mod" src="https://github.com/user-attachments/assets/6a7fda25-6518-470a-8281-3525ac94663b" />
 
 ### 📊 Persistent State & Analytics
 
   * **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, window geometry, and menu message IDs—is saved to `data.json`.
   * **VC Time Tracking**: Tracks cumulative time users spend in moderated voice channels, with daily leaderboards (`!times`).
 
-<img width="1102" height="1084" alt="console" src="https://github.com/user-attachments/assets/0c700861-f7e8-46ed-9527-c769d74a349f" />
+<img width="1102" height="1084" alt="console" src="https://github.com/user-attachments/assets/ce468df4-4a6f-46fe-8b87-beef2f5f165a" />
 
 ## 📋 Command List
 
