@@ -49,7 +49,7 @@ MOD_MEDIA = False
 
 # --- 🌐 BROWSER AUTOMATION (SELENIUM) 🌐 ---
 # The URL the bot will open. Change only if you use a different Omegle mirror.
-OMEGLE_VIDEO_URL = "https://uhmegle.com/video"
+OMEGLE_VIDEO_URL = "https://umingle.com/video"
 
 # If True, the bot will automatically pause/refresh the Omegle stream when the last user with a camera leaves the STREAMING_VC_ID.
 EMPTY_VC_PAUSE = True
@@ -198,6 +198,7 @@ GLOBAL_HOTKEY_MVOLDOWN = ""            # The key to trigger the !mvoldown. Uses 
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = ""              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
