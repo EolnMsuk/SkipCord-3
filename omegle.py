@@ -24,6 +24,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys 
 from loguru import logger
 
 import config
@@ -254,25 +255,14 @@ class OmegleHandler:
     async def _attempt_send_relay(self) -> bool:
         """
         Attempts to send the '/relay' command and set volume based on config.
-
-        This is used to enable audio relay from the browser to Discord.
-        It is triggered by !skip *after* a !refresh has occurred.
-
-        Returns:
-            True if the command was sent or was already sent, False on failure.
+        Updated for Umingle/Ome.tv compatibility using ENTER key instead of clicking buttons.
         """
         async with self.state.moderation_lock:
-            # If it was already sent (or we don't have state), do nothing.
-            # This is the important flag that `!refresh` resets.
             if not self.state or self.state.relay_command_sent:
                 return True
             
-            # Mark as "attempted" so we don't try again until next refresh
-            # We set this true regardless of config, as the *attempt* is now happening.
             self.state.relay_command_sent = True 
             logger.info("Processing auto-relay and auto-volume checks...")
-
-        # --- SWAPPED ORDER: RELAY FIRST, THEN VOLUME ---
 
         # --- 1. Handle Auto Relay ---
         if not self.config.AUTO_RELAY:
@@ -280,34 +270,50 @@ class OmegleHandler:
         else:
             logger.info("AUTO_RELAY is True. Attempting to send /relay command...")
             try:
-                chat_input_selector = "textarea.messageInput"
-                send_button_xpath = (
-                    "//div[contains(@class, 'mainText') and text()='Send']"
-                )
+                # Common selectors for Omegle clones (Umingle, Uhmegle, Ome.tv)
+                input_selectors = [
+                    "textarea.chat-msg",       # Common on Ome.tv/Umingle
+                    "textarea.messageInput",   # Common on Uhmegle
+                    "textarea[placeholder='Type your message...']",
+                    "textarea"                 # Fallback generic
+                ]
 
                 def send_relay_command():
                     """Blocking function to interact with Selenium elements."""
                     try:
                         time.sleep(1.0)  # Wait for elements to be stable
-                        chat_input = self.driver.find_element(
-                            "css selector", chat_input_selector
-                        )
+                        
+                        chat_input = None
+                        # Try finding the input box using multiple known selectors
+                        for selector in input_selectors:
+                            try:
+                                chat_input = self.driver.find_element(By.CSS_SELECTOR, selector)
+                                if chat_input.is_displayed():
+                                    break
+                            except NoSuchElementException:
+                                continue
+                        
+                        if not chat_input:
+                            logger.warning("Could not find chat input text area.")
+                            return False
+
+                        # Type command and press ENTER
+                        chat_input.clear()
                         chat_input.send_keys("/relay")
-                        time.sleep(0.5)
-                        send_button = self.driver.find_element("xpath", send_button_xpath)
-                        send_button.click()
+                        time.sleep(0.1)
+                        chat_input.send_keys(Keys.RETURN)
                         return True
+
                     except Exception as e:
                         logger.warning(
-                            f"Could not find/interact with chat elements to send /relay. Error: {e}"
+                            f"Error interacting with chat elements: {e}"
                         )
                         return False
 
                 relay_sent = await asyncio.to_thread(send_relay_command)
 
                 if relay_sent:
-                    # The flag was already set at the start, so just log success
-                    logger.info("Successfully sent /relay command.")
+                    logger.info("Successfully sent /relay command via Return key.")
                 else:
                     logger.warning("Failed to send /relay command.")
 
