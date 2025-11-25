@@ -1,6 +1,6 @@
 # SkipCord-3.7: A Discord / Omegle / Music Bot
 
-This powerful bot seamlessly integrates shared Omegle streaming, empowering your audience to actively direct the experience through menus. It safeguards your community with intelligent auto-moderation while keeping the energy high using a complete music system. It also features automated ban detection with evidence logging and provides detailed daily analytics to track engagement.
+This powerful bot seamlessly integrates shared Omegle streaming, empowering your audience to actively direct the experience through menus. It safeguards your community with intelligent auto-moderation while keeping the energy high using a complete music system. Includes automated ban detection with evidence logging and detailed daily analytics.
 
   - [Key Features](#-key-features)
   - [Commands](#-command-list)
