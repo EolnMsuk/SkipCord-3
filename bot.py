@@ -67,6 +67,12 @@ MUSIC_METADATA_CACHE = {}
 YDL_OPTIONS = {'format': 'bestaudio[ext=m4a]/bestaudio/best', 'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', 'restrictfilenames': True, 'extract_flat': True, 'nocheckcertificate': True, 'ignoreerrors': True, 'logtostderr': False, 'quiet': True, 'no_warnings': True, 'default_search': 'auto', 'source_address': '0.0.0.0', 'no_playlist_index': True, 'yes_playlist': True}
 FFMPEG_OPTIONS_STREAM = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn -loglevel debug -nostdin'}
 FFMPEG_OPTIONS_LOUDNORM = {'options': '-vn -loglevel error -af "loudnorm=I=-16:LRA=11:tp=-1.5"'}
+
+# --- Configuration Constants ---
+MAX_PLAYLIST_TRACKS = 100       # Spotify limit (You can move this up too if you want!)
+MAX_YT_PLAYLIST_TRACKS = 100    # Limit songs loaded from a single YouTube playlist
+MAX_TOTAL_QUEUE_SIZE = 300      # Hard cap for the entire queue
+
 def get_display_title_from_path(song_path: str) -> str:
     metadata = MUSIC_METADATA_CACHE.get(song_path)
     if metadata:
@@ -77,7 +83,7 @@ def get_display_title_from_path(song_path: str) -> str:
         elif raw_title:
             return raw_title
     return os.path.basename(song_path)
-@tasks.loop(minutes=57.222)
+@tasks.loop(minutes=57.221)
 async def periodic_cleanup():
     try:
         await state.clean_old_entries()
@@ -1626,7 +1632,7 @@ async def _trigger_full_menu_repost():
             logger.info('Successfully completed triggered full menu repost.')
         except Exception as e:
             logger.error(f'Error during triggered menu repost: {e}', exc_info=True)
-@tasks.loop(minutes=9.31)
+@tasks.loop(minutes=20.31)
 async def periodic_menu_update() -> None:
     # Prevent this task from running if a reactive repost (triggered by an interaction error) 
     # is currently in progress. This prevents fighting over the channel.
@@ -2165,15 +2171,22 @@ async def msearch(ctx, *, query: str):
     if not await ensure_voice_connection():
         await ctx.send('❌ Music player is not connected and could not reconnect.', delete_after=10)
         return
+
     search_query = query.strip()
     status_msg = await ctx.send(f'⏳ Searching for `{search_query}`...')
-    clean_query = extract_youtube_url(search_query) or search_query
+    
+    # --- CHANGED: Use raw query to support playlists/timestamps ---
+    clean_query = search_query
+    # --------------------------------------------------------------
+    
     all_hits = []
     is_youtube_search = False
+    
     url_pattern = re.compile('https?://(www\\.)?((music\\.)?youtube|youtu|soundcloud|spotify|bandcamp)\\.(com|be)/.+')
     is_spotify_url = 'spotify' in clean_query.lower()
     is_generic_url = url_pattern.match(clean_query)
 
+    # --- 1. SPOTIFY HANDLING ---
     if is_spotify_url:
         if not sp:
             await status_msg.edit(content='❌ Spotify support is not configured. Missing credentials in `.env` file.')
@@ -2181,44 +2194,33 @@ async def msearch(ctx, *, query: str):
         await status_msg.edit(content=f'Spotify link detected. Fetching metadata from Spotify API...')
         try:
             tracks_to_search = []
-            
-            # --- NEW: Define a max limit for playlists to prevent abuse ---
-            MAX_PLAYLIST_TRACKS = 100
 
             if '/track/' in clean_query:
-                # FIX: Async wrapper
                 track_info = await asyncio.to_thread(sp.track, clean_query)
                 if track_info:
                     tracks_to_search.append(track_info)
             elif '/album/' in clean_query:
-                # FIX: Async wrapper
                 results = await asyncio.to_thread(sp.album_tracks, clean_query)
                 if results:
                     tracks_to_search.extend(results['items'])
             elif '/playlist/' in clean_query:
-                # FIX: Async wrapper
                 results = await asyncio.to_thread(sp.playlist_tracks, clean_query, limit=50)
                 if results:
                     while results:
-                        # Add the tracks from this page
                         new_tracks = [item['track'] for item in results['items'] if item and item.get('track')]
                         tracks_to_search.extend(new_tracks)
                         
-                        # --- MODIFIED: Check limit and stop if full or no more pages ---
+                        # Check Spotify Limit
                         if len(tracks_to_search) >= MAX_PLAYLIST_TRACKS:
                             logger.warning(f'Spotify playlist processing limit ({MAX_PLAYLIST_TRACKS}) reached. Truncating list.')
                             tracks_to_search = tracks_to_search[:MAX_PLAYLIST_TRACKS]
-                            results = None # Stop the loop
+                            results = None 
                         elif results['next']:
                             logger.debug(f"Fetching next page of Spotify playlist... (current count: {len(tracks_to_search)})")
-                            # FIX: Async wrapper
-                            results = await asyncio.to_thread(sp.next, results) # Get next page
-                            
-                            # *** INSERT HERE ***
+                            results = await asyncio.to_thread(sp.next, results)
                             await asyncio.sleep(0.1) 
-                            
                         else:
-                            results = None # No more pages
+                            results = None
 
             if not tracks_to_search:
                 raise ValueError('Could not retrieve any tracks from the Spotify URL.')
@@ -2243,7 +2245,6 @@ async def msearch(ctx, *, query: str):
                     except Exception:
                         logger.warning(f"Could not find a YouTube match for Spotify query '{yt_query}'")
         
-        # --- NEW: Catch Spotify API errors (like the 404 you saw) ---
         except spotipy.exceptions.SpotifyException as e:
             logger.error(f"A Spotify API error occurred: {e}", exc_info=True)
             await status_msg.edit(content=f'❌ A Spotify API error occurred. The playlist might be private or invalid (404).')
@@ -2270,6 +2271,19 @@ async def msearch(ctx, *, query: str):
                     existing_paths.add(song_path)
                 else:
                     skipped_count += 1
+            
+            # --- HARD CAP CHECK (Spotify) ---
+            current_queue_size = len(state.active_playlist) + len(state.search_queue)
+            remaining_slots = MAX_TOTAL_QUEUE_SIZE - current_queue_size
+            
+            if new_songs_to_queue and remaining_slots <= 0:
+                await ctx.send(f"⚠️ Queue is full ({MAX_TOTAL_QUEUE_SIZE} limit)! Cannot add more songs.")
+                new_songs_to_queue = [] 
+            elif new_songs_to_queue and len(new_songs_to_queue) > remaining_slots:
+                new_songs_to_queue = new_songs_to_queue[:remaining_slots]
+                await ctx.send(f"⚠️ Queue cap reached! Only adding the first {len(new_songs_to_queue)} songs.")
+            # --------------------------------
+
             if new_songs_to_queue:
                 state.search_queue.extend(new_songs_to_queue)
                 added_count = len(new_songs_to_queue)
@@ -2288,6 +2302,7 @@ async def msearch(ctx, *, query: str):
             await play_next_song()
         return
 
+    # --- 2. GENERIC URL / YOUTUBE PLAYLIST HANDLING ---
     elif is_generic_url:
         await status_msg.edit(content=f'⏳ Processing URL: `{clean_query}`...')
         try:
@@ -2295,6 +2310,12 @@ async def msearch(ctx, *, query: str):
                 search_results = await asyncio.to_thread(ydl.extract_info, clean_query, download=False)
                 if search_results and 'entries' in search_results:
                     for entry in search_results['entries']:
+                        # --- YOUTUBE PLAYLIST LIMIT CHECK ---
+                        if len(all_hits) >= MAX_YT_PLAYLIST_TRACKS:
+                            logger.info(f"Hit YouTube playlist limit of {MAX_YT_PLAYLIST_TRACKS}")
+                            break
+                        # ------------------------------------
+
                         if not entry or not entry.get('url'):
                             continue
                         title = entry.get('title', '').lower()
@@ -2310,6 +2331,8 @@ async def msearch(ctx, *, query: str):
                         logger.info(f"Skipping unavailable video from single URL: {search_results.get('title')}")
         except Exception as e:
             logger.warning(f"Direct URL processing for '{clean_query}' failed with error: {e}. Falling back to text search.")
+
+    # --- 3. TEXT SEARCH HANDLING ---
     if not all_hits:
         if not is_generic_url:
             await status_msg.edit(content=f'⏳ Searching for `{clean_query}` in the local library...')
@@ -2340,9 +2363,12 @@ async def msearch(ctx, *, query: str):
                 await status_msg.edit(content=f'❌ An error occurred while searching YouTube: {e}')
                 logger.error(f"Youtube search failed for query '{clean_query}': {e}")
                 return
+
     if not all_hits:
         await status_msg.edit(content=f'❌ No songs found matching `{search_query}`.')
         return
+
+    # --- 4. ADDING TO QUEUE (GENERIC URL / PLAYLIST) ---
     if is_generic_url and len(all_hits) > 1:
         added_count, skipped_count, was_idle = (0, 0, False)
         async with state.music_lock:
@@ -2356,10 +2382,24 @@ async def msearch(ctx, *, query: str):
                     existing_paths.add(song['path'])
                 else:
                     skipped_count += 1
+            
+            # --- HARD CAP CHECK (Generic URL) ---
+            current_queue_size = len(state.active_playlist) + len(state.search_queue)
+            remaining_slots = MAX_TOTAL_QUEUE_SIZE - current_queue_size
+
+            if new_songs_to_queue and remaining_slots <= 0:
+                await ctx.send(f"⚠️ Queue is full ({MAX_TOTAL_QUEUE_SIZE} limit)! Cannot add more songs.")
+                new_songs_to_queue = []
+            elif new_songs_to_queue and len(new_songs_to_queue) > remaining_slots:
+                new_songs_to_queue = new_songs_to_queue[:remaining_slots]
+                await ctx.send(f"⚠️ Queue cap reached! Only adding the first {len(new_songs_to_queue)} songs.")
+            # ------------------------------------
+
             if new_songs_to_queue:
                 state.search_queue.extend(new_songs_to_queue)
                 added_count = len(new_songs_to_queue)
                 was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
+        
         response_msg = f'✅ Added **{added_count}** songs to the queue from the playlist.'
         if skipped_count > 0:
             response_msg += f' ({skipped_count} duplicates were skipped).'
@@ -2372,9 +2412,19 @@ async def msearch(ctx, *, query: str):
         if was_idle and added_count > 0:
             await play_next_song()
         return
+
+    # --- 5. ADDING TO QUEUE (SINGLE URL) ---
     if is_generic_url and len(all_hits) == 1:
         song_to_add = all_hits[0]
         song_title = song_to_add.get('title', 'Unknown Title')
+        
+        # --- HARD CAP CHECK (Single Song) ---
+        async with state.music_lock:
+             if len(state.active_playlist) + len(state.search_queue) >= MAX_TOTAL_QUEUE_SIZE:
+                 await status_msg.edit(content=f"⚠️ Queue is full ({MAX_TOTAL_QUEUE_SIZE} limit)! Cannot add **{song_title}**.")
+                 return
+        # ------------------------------------
+
         if await is_song_in_queue(state, song_to_add['path']):
             await status_msg.edit(content=f'⚠️ **{song_title}** is already in the queue.')
             return
@@ -2387,6 +2437,8 @@ async def msearch(ctx, *, query: str):
         if was_idle:
             await play_next_song()
         return
+
+    # --- 6. SEARCH RESULTS VIEW (INTERACTIVE MENU) ---
     class SearchResultsView(discord.ui.View):
         def __init__(self, hits: list, author: discord.Member, query: str, is_Youtube: bool, youtube_page: int = 1):
             super().__init__(timeout=180.0)
@@ -2408,12 +2460,12 @@ async def msearch(ctx, *, query: str):
             self.clear_items()
             self.add_item(self.create_dropdown())
             
-            # Local Navigation (if hits span multiple pages)
+            # Local Navigation
             if not self.is_Youtube and self.total_pages > 1:
                 self.add_item(self.create_nav_button('⬅️ Prev', 'prev_page', self.current_page == 0))
                 self.add_item(self.create_nav_button('Next ➡️', 'next_page', self.current_page >= self.total_pages - 1))
             
-            # YouTube API Navigation (fetch next 10 results)
+            # YouTube API Navigation
             if self.is_Youtube:
                 self.add_item(self.create_youtube_nav_button('Next Page ➡️', 'youtube_next_page', len(self.hits) < 10))
 
@@ -2424,7 +2476,6 @@ async def msearch(ctx, *, query: str):
             
             options = []
             
-            # Option to switch to YouTube search
             if not self.is_Youtube:
                 options.append(discord.SelectOption(
                     label=f"Search YouTube for '{self.query[:50]}'", 
@@ -2432,7 +2483,6 @@ async def msearch(ctx, *, query: str):
                     emoji='📺'
                 ))
             
-            # Option to add all displayed songs
             if page_hits:
                 options.append(discord.SelectOption(
                     label=f'Add All ({len(page_hits)}) On This Page', 
@@ -2440,7 +2490,6 @@ async def msearch(ctx, *, query: str):
                     emoji='➕'
                 ))
             
-            # Individual song options
             for i, hit in enumerate(page_hits):
                 options.append(discord.SelectOption(
                     label=f"{start_index + i + 1}. {hit['title']}"[:95], 
@@ -2455,53 +2504,40 @@ async def msearch(ctx, *, query: str):
 
         def create_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, custom_id=custom_id, disabled=disabled)
-            
             async def nav_callback(interaction: discord.Interaction):
                 if interaction.user != self.author:
                     await interaction.response.send_message('You cannot control this menu.', ephemeral=True)
                     return
-                
                 if interaction.data['custom_id'] == 'prev_page':
                     self.current_page -= 1
                 elif interaction.data['custom_id'] == 'next_page':
                     self.current_page += 1
-                
                 self.update_components()
                 await interaction.response.edit_message(view=self)
-            
             button.callback = nav_callback
             return button
 
         def create_youtube_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary, custom_id=custom_id, disabled=disabled)
-            
             async def youtube_nav_callback(interaction: discord.Interaction):
                 if interaction.user != self.author:
                     await interaction.response.send_message('You cannot control this menu.', ephemeral=True)
                     return
-                
                 await interaction.response.edit_message(content=f'⏳ Loading page {self.youtube_page + 1} of YouTube results...', view=None)
-                
-                # Fetch next page from YouTube
                 next_page = self.youtube_page + 1
                 next_page_ydl_opts = YDL_OPTIONS.copy()
                 next_page_ydl_opts['playliststart'] = self.youtube_page * 10 + 1
-                
                 new_hits = []
                 try:
                     with yt_dlp.YoutubeDL(next_page_ydl_opts) as ydl:
                         search_results = await asyncio.to_thread(ydl.extract_info, f'ytsearch10:{self.query}', download=False)
-                        
                         if 'entries' in search_results:
                             for entry in search_results.get('entries', []):
                                 if not entry or not entry.get('url'):
                                     continue
-                                
                                 title = entry.get('title', '').lower()
                                 if '[deleted video]' in title or '[private video]' in title:
-                                    logger.info(f"Skipping unavailable video from YouTube 'Next Page': {entry.get('title')}")
                                     continue
-                                
                                 new_hits.append({
                                     'title': entry.get('title', 'Unknown Title'),
                                     'path': entry.get('webpage_url', entry.get('url')),
@@ -2512,14 +2548,11 @@ async def msearch(ctx, *, query: str):
                     self.update_components()
                     await interaction.message.edit(content='An error occurred.', view=self)
                     return
-
                 if not new_hits:
                     self.disabled = True
                     self.update_components()
                     await interaction.message.edit(content='No more results found.', view=self)
                     return
-                
-                # Create new view for the new results
                 new_view = SearchResultsView(
                     hits=new_hits, 
                     author=self.author, 
@@ -2529,7 +2562,6 @@ async def msearch(ctx, *, query: str):
                 )
                 new_view.message = interaction.message
                 await interaction.message.edit(content=f'Showing YouTube results page {next_page}:', view=new_view)
-            
             button.callback = youtube_nav_callback
             return button
 
@@ -2541,24 +2573,19 @@ async def msearch(ctx, *, query: str):
             
             selected_value = interaction.data['values'][0]
 
-            # --- CASE 1: Switch to YouTube Search ---
             if selected_value == 'search_youtube':
                 await interaction.message.edit(content=f'⏳ Searching YouTube for `{self.query}`...', view=None)
                 youtube_hits = []
                 try:
                     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                         search_results = await asyncio.to_thread(ydl.extract_info, f'ytsearch10:{self.query}', download=False)
-                        
                         if 'entries' in search_results:
                             for entry in search_results['entries']:
                                 if not entry or not entry.get('url'):
                                     continue
-                                
                                 title = entry.get('title', '').lower()
                                 if '[deleted video]' in title or '[private video]' in title:
-                                    logger.info(f"Skipping unavailable video from 'Search YouTube' button: {entry.get('title')}")
                                     continue
-                                
                                 youtube_hits.append({
                                     'title': entry.get('title', 'Unknown Title'),
                                     'path': entry.get('webpage_url', entry.get('url')),
@@ -2566,32 +2593,40 @@ async def msearch(ctx, *, query: str):
                                 })
                 except Exception as e:
                     await interaction.message.edit(content=f'❌ An error occurred: {e}')
-                    logger.error(f'Youtube failed: {e}')
                     return
-                
                 if not youtube_hits:
                     await interaction.message.edit(content=f'❌ No songs found on YouTube for `{self.query}`.')
                     return
-                
                 new_view = SearchResultsView(youtube_hits, self.author, self.query, is_Youtube=True, youtube_page=1)
                 new_view.message = interaction.message
                 await interaction.message.edit(content=f'Found {len(youtube_hits)} results from YouTube:', view=new_view)
                 return
 
-            # --- CASE 2: Add All Songs on Page ---
             if selected_value == 'add_all':
                 start_index = self.current_page * self.page_size
                 end_index = (self.current_page + 1) * self.page_size
                 songs_to_add_raw = self.hits[start_index:end_index]
                 
+                # --- HARD CAP CHECK (Add All) ---
+                async with state.music_lock:
+                    current_len = len(state.active_playlist) + len(state.search_queue)
+                    remaining = MAX_TOTAL_QUEUE_SIZE - current_len
+
+                if remaining <= 0:
+                    await interaction.followup.send(f"⚠️ Queue is full ({MAX_TOTAL_QUEUE_SIZE} limit).", ephemeral=True)
+                    return
+
+                if len(songs_to_add_raw) > remaining:
+                    songs_to_add_raw = songs_to_add_raw[:remaining]
+                    await interaction.followup.send(f"⚠️ Queue cap hit. Adding only {len(songs_to_add_raw)} songs.", ephemeral=True)
+                # --------------------------------
+
                 songs_to_add = []
                 already_in_queue_count = 0
-                
                 async with state.music_lock:
                     existing_paths = {s.get('path') for s in state.active_playlist + state.search_queue}
                     if state.current_song:
                         existing_paths.add(state.current_song.get('path'))
-                
                 for song in songs_to_add_raw:
                     if song.get('path') and song['path'] not in existing_paths:
                         songs_to_add.append(song)
@@ -2605,20 +2640,16 @@ async def msearch(ctx, *, query: str):
                 
                 async with state.music_lock:
                     state.search_queue.extend(songs_to_add)
-                    # UPDATED SAFETY CHECK: Check if client exists AND if it is playing/paused
                     was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
                 
                 response_msg = f'🎵 {interaction.user.mention} added {len(songs_to_add)} songs.'
                 if already_in_queue_count > 0:
                     response_msg += f' ({already_in_queue_count} were duplicates).'
-                
                 await interaction.followup.send(response_msg)
                 asyncio.create_task(update_music_menu())
-                
                 if was_idle:
                     await asyncio.create_task(play_next_song())
 
-                # Move to next page if available, else disable view
                 if self.current_page < self.total_pages - 1:
                     self.current_page += 1
                     self.update_components()
@@ -2628,22 +2659,24 @@ async def msearch(ctx, *, query: str):
                         item.disabled = True
                     await interaction.message.edit(content='Added songs from the last page.', view=self)
 
-            # --- CASE 3: Add Single Selected Song ---
             else:
                 selected_song = self.hits[int(selected_value)]
                 
+                # --- HARD CAP CHECK (Single Song) ---
+                async with state.music_lock:
+                    if len(state.active_playlist) + len(state.search_queue) >= MAX_TOTAL_QUEUE_SIZE:
+                        await interaction.followup.send(f"⚠️ Queue is full ({MAX_TOTAL_QUEUE_SIZE} limit).", ephemeral=True)
+                        return
+                # ------------------------------------
+
                 if await is_song_in_queue(bot.state, selected_song['path']):
                     await interaction.followup.send(f"⚠️ **{selected_song['title']}** is already in the queue.", ephemeral=True)
                     return
-                
                 async with state.music_lock:
                     state.search_queue.append(selected_song)
-                    # UPDATED SAFETY CHECK: Check if client exists AND if it is playing/paused
                     was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
-                
                 await interaction.followup.send(f"🎵 {interaction.user.mention} added **{selected_song['title']}** to the queue.")
                 asyncio.create_task(update_music_menu())
-                
                 if was_idle:
                     await play_next_song()
 
@@ -2655,6 +2688,7 @@ async def msearch(ctx, *, query: str):
                     await self.message.edit(content='Search menu timed out.', view=self)
                 except discord.NotFound:
                     pass
+    
     view = SearchResultsView(all_hits, ctx.author, query=search_query, is_Youtube=is_youtube_search)
     content_msg = f'Found {len(all_hits)} results. Select a song to add:'
     view.message = await status_msg.edit(content=content_msg, view=view)

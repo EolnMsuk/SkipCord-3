@@ -2902,13 +2902,22 @@ class BotHelper:
             
             response_text = f"✅ Cleared **{queue_length}** songs from the queue."
             if was_playing:
-                response_text += " and stopped playback."
+                response_text += " Queue cleared. Starting local library..."
             
             await ctx_or_interaction.channel.send(response_text)
             logger.info(f"Music queue and playback cleared by {author.name}")
             
             if self.update_music_menu:
                 self.update_music_menu()  # Update menu state
+
+            # --- AUTO-START LOCAL LIBRARY ---
+            if self.play_next_song:
+                # Wait 1 second to let the previous track fully release/disconnect
+                await asyncio.sleep(1.0)
+                # Manually trigger the next song logic.
+                # Since queue is empty, this will default to picking a local song.
+                asyncio.create_task(self.play_next_song())
+            # -------------------------------
         
         elif confirmed.done() and confirmed.result() is False:
             pass # User cancelled
