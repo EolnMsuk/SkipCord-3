@@ -179,12 +179,12 @@ Open `config.py` and replace the placeholder values with your server's settings.
 
 ```python
 # --- REQUIRED SETTINGS ---
-GUILD_ID = 123456789012345678                # Your Discord Server ID
-COMMAND_CHANNEL_ID = 123456789012345678      # Channel for bot commands and menus
-CHAT_CHANNEL_ID = 123456789012345678         # Channel for join/leave/ban notifications
-STREAMING_VC_ID = 123456789012345678         # Main streaming/music voice channel
-PUNISHMENT_VC_ID = 123456789012345678        # VC where users are moved for a first violation
-OMEGLE_VIDEO_URL = "[https://example-stream-site.com/video](https://example-stream-site.com/video)" # URL for the streaming website
+GUILD_ID = 123456789012345678                    # Your Discord Server ID
+COMMAND_CHANNEL_ID = 123456789012345678          # Channel for bot commands and menus
+CHAT_CHANNEL_ID = 123456789012345678             # Channel for join/leave/ban notifications
+STREAMING_VC_ID = 123456789012345678             # Main streaming/music voice channel
+PUNISHMENT_VC_ID = 123456789012345678            # VC where users are moved for a first violation
+OMEGLE_VIDEO_URL = "https://umingle.com/video"   # URL for the streaming website
 # Go to edge://version/ in edge and copy "Profile path" without the "/Default" or "/Profile X" at the end.
 EDGE_USER_DATA_DIR = "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data/"
 EDGE_DRIVER_PATH = None # Optional: "C:/path/to/msedgedriver.exe"
