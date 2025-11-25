@@ -5,7 +5,7 @@ SkipCord-3 is a powerful, modular Discord bot designed for streamers or channels
   - [Key Features](#-key-features)
   - [Commands](#-command-list)
   - [How to Setup](#%EF%B8%8F-setup--configuration)
-  - [Donations](#donations)
+  - [Donations](#donate)
 
 ## ✨ Key Features
 
@@ -235,7 +235,7 @@ TIMEOUT_DURATION_THIRD_VIOLATION = 300
   * **Spotify Links**: Check Client ID/Secret in `.env`. Note that playlists are limited to 100 tracks.
   * **VC Errors**: Check the `LOG_GC` channel. Ensure the bot has "Connect" and "Speak" permissions.
 
-### Donations
+### Donate
 
   * **CashApp:** `cash.app/$eolnmsuk`
   * **Bitcoin:** `bc1qm06lzkdfule3f7flf4u70xvjrp5n74lzxnnfks`
