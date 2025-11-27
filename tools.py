@@ -714,6 +714,9 @@ class BotState:
     last_vc_connect_fail_time: float = 0.0
     ban_message_id: Optional[int] = None
     ban_screenshots: ScreenshotBuffer = field(default_factory=list, init=False)
+    
+    # Track the grace period task for music disconnection
+    music_disconnect_task: Optional[asyncio.Task] = field(default=None, init=False)
 
     # --- Message IDs (for editing) ---
     music_menu_message_id: Optional[int] = None

@@ -840,11 +840,16 @@ async def play_next_song(error=None, retry_count: int = 0):
     # 4. Handle Empty Library / Scanning
     if needs_library_scan:
         logger.info('Local music queue is empty. Rescanning and reshuffling library...')
-        await scan_and_shuffle_music()
+        songs_found = await scan_and_shuffle_music()
         
-        # RECURSION FIX: Create task instead of recursive await, pass incremented retry_count
-        bot.loop.create_task(play_next_song(retry_count=retry_count + 1))
-        return
+        if songs_found > 0:
+            # Songs found: Create task to retry playback immediately
+            bot.loop.create_task(play_next_song(retry_count=retry_count + 1))
+            return
+        else:
+            # No songs found (Empty Folder): Do NOT retry. 
+            # Fall through to the 'else' block below to stop/idle gracefully.
+            pass
 
     # 5. Play the Song
     if song_to_play_info:
@@ -1224,10 +1229,50 @@ async def on_member_unban(guild: discord.Guild, user: discord.User) -> None:
 @handle_errors
 async def on_member_remove(member: discord.Member) -> None:
     await helper.handle_member_remove(member)
+async def _delayed_music_disconnect():
+    """
+    Waits 30 seconds. If cancelled, nothing happens.
+    If finished, disconnects the bot.
+    """
+    try:
+        logger.info('No active cameras detected. Starting 30s grace period before disconnecting music bot...')
+        await asyncio.sleep(30)
+        
+        # Double check state after sleep
+        if not state.music_enabled: 
+            return
+
+        logger.info('Grace period ended. Disconnecting music bot.')
+        
+        async with state.music_lock:
+            state.stop_after_clear = True
+            
+        if bot.voice_client_music and bot.voice_client_music.is_connected():
+            try:
+                await bot.voice_client_music.disconnect(force=True)
+            except Exception as e:
+                logger.error(f'Error during delayed music disconnect: {e}')
+                
+        bot.voice_client_music = None
+        async with state.music_lock:
+            state.is_music_playing = False
+            state.is_music_paused = False
+            state.current_song = None
+            
+        await bot.change_presence(activity=None)
+        asyncio.create_task(update_music_menu())
+        
+    except asyncio.CancelledError:
+        logger.info('Music disconnect timer cancelled. Users with cameras returned.')
+    except Exception as e:
+        logger.error(f'Error in delayed disconnect task: {e}', exc_info=True)
+    finally:
+        state.music_disconnect_task = None
 async def manage_music_presence():
     if not state.music_enabled:
         return
     await asyncio.sleep(1.5)
+    
     guild = bot.get_guild(bot_config.GUILD_ID)
     if not guild:
         logger.error("manage_music_presence: Guild not found.")
@@ -1236,30 +1281,27 @@ async def manage_music_presence():
     if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel):
         logger.error("manage_music_presence: Streaming VC not found or invalid.")
         return
+        
     human_listeners_with_cam = [m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice and m.voice.self_video]
     is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
+
+    # Case 1: Bot is connected, but NO cameras are on.
     if is_bot_connected and (not human_listeners_with_cam):
-        logger.info('No active users with cameras detected. Attempting to disconnect music bot.')
-        async with state.music_lock:
-            state.stop_after_clear = True
-        try:
-            await bot.voice_client_music.disconnect(force=True)
-            logger.info('Successfully disconnected music bot.')
-        except Exception as e:
-            logger.error(f'Error during music bot disconnect (forcing cleanup): {e}', exc_info=True)
-        finally:
-            bot.voice_client_music = None
-            async with state.music_lock:
-                state.is_music_playing = False
-                state.is_music_paused = False
-                state.current_song = None
-            await bot.change_presence(activity=None)
-            asyncio.create_task(update_music_menu())
+        # If the timer isn't already running, start it.
+        if not state.music_disconnect_task or state.music_disconnect_task.done():
+            state.music_disconnect_task = asyncio.create_task(_delayed_music_disconnect())
         return
-    if not is_bot_connected and human_listeners_with_cam:
-        # Bot is not connected, but users are here. Time to join.
-        logger.info('Active user with camera detected and bot is not in VC. Triggering music start.')
-        asyncio.create_task(start_music_playback())
+
+    # Case 2: Users with cameras ARE present.
+    if human_listeners_with_cam:
+        # If a disconnect timer is running, CANCEL it immediately.
+        if state.music_disconnect_task and not state.music_disconnect_task.done():
+            state.music_disconnect_task.cancel()
+        
+        # If bot is not connected, join now.
+        if not is_bot_connected:
+            logger.info('Active user with camera detected and bot is not in VC. Triggering music start.')
+            asyncio.create_task(start_music_playback())
 
 async def _graceful_security_shutdown():
     """
