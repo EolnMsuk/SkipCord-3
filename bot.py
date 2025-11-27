@@ -826,13 +826,16 @@ async def play_next_song(error=None, retry_count: int = 0):
 
             # Priority 4: Local Library (Background Shuffle)
             if not song_to_play_info:
-                if not state.shuffle_queue:
-                    needs_library_scan = True
-                else:
-                    song_path = state.shuffle_queue.pop(0)
-                    display_title = get_display_title_from_path(song_path)
-                    song_to_play_info = {'path': song_path, 'title': display_title, 'is_stream': False}
-                    logger.info(f'Playing next from local library (Default Shuffle): {display_title}')
+                # --- FIX: Only attempt local playback if MUSIC_LOCATION is actually set ---
+                if bot_config.MUSIC_LOCATION and os.path.isdir(bot_config.MUSIC_LOCATION):
+                    if not state.shuffle_queue:
+                        needs_library_scan = True
+                    else:
+                        song_path = state.shuffle_queue.pop(0)
+                        display_title = get_display_title_from_path(song_path)
+                        song_to_play_info = {'path': song_path, 'title': display_title, 'is_stream': False}
+                        logger.info(f'Playing next from local library (Default Shuffle): {display_title}')
+                # ------------------------------------------------------------------------
 
     # 4. Handle Empty Library / Scanning
     if needs_library_scan:
