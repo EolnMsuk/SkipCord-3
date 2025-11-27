@@ -730,13 +730,12 @@ class OmegleHandler:
         # 2. DELAY 3: User requested 0.5s delay BEFORE the skip keys
         await asyncio.sleep(0.5)
 
-        # 3. Perform Skip Keys (Esc Esc) - This opens the chat box
-        skip_successful = await self._perform_skip_keys(ctx)
+        # 3. Perform Relay/Vol Adjust BEFORE skipping (User Request)
+        # We run this unconditionally before the keys to ensure volume is set
+        await self._attempt_send_relay()
 
-        # 4. Perform Relay/Vol Adjust immediately after skipping
-        # Only try this if the skip actually happened
-        if skip_successful:
-            await self._attempt_send_relay()
+        # 4. Perform Skip Keys (Esc Esc) - This opens the chat box/skips
+        skip_successful = await self._perform_skip_keys(ctx)
         
         return skip_successful
 

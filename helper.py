@@ -2916,7 +2916,7 @@ class BotHelper:
                 await asyncio.sleep(1.0)
                 # Manually trigger the next song logic.
                 # Since queue is empty, this will default to picking a local song.
-                asyncio.create_task(self.play_next_song())
+                self.play_next_song() # <--- REMOVED asyncio.create_task()
             # -------------------------------
         
         elif confirmed.done() and confirmed.result() is False:

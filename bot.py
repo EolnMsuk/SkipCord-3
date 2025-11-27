@@ -64,7 +64,7 @@ bot.voice_client_music = None
 STATE_FILE = 'data.json'
 MUSIC_METADATA_CACHE_FILE = 'music_metadata_cache.json'
 MUSIC_METADATA_CACHE = {}
-YDL_OPTIONS = {'format': 'bestaudio[ext=m4a]/bestaudio/best', 'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', 'restrictfilenames': True, 'extract_flat': True, 'nocheckcertificate': True, 'ignoreerrors': True, 'logtostderr': False, 'quiet': True, 'no_warnings': True, 'default_search': 'auto', 'source_address': '0.0.0.0', 'no_playlist_index': True, 'yes_playlist': True}
+YDL_OPTIONS = {'format': 'bestaudio[ext=m4a]/bestaudio/best', 'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', 'restrictfilenames': True, 'extract_flat': True, 'nocheckcertificate': True, 'ignoreerrors': True, 'logtostderr': False, 'quiet': True, 'no_warnings': True, 'default_search': 'auto', 'source_address': '0.0.0.0', 'no_playlist_index': True, 'yes_playlist': True, 'cookiefile': 'cookies.txt'}
 FFMPEG_OPTIONS_STREAM = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn -loglevel debug -nostdin'}
 FFMPEG_OPTIONS_LOUDNORM = {'options': '-vn -loglevel error -af "loudnorm=I=-16:LRA=11:tp=-1.5"'}
 

@@ -389,6 +389,7 @@ class BotConfig:
     EMPTY_VC_PAUSE: bool
     AUTO_VC_START: bool
     CLICK_CHECKBOX: bool
+    SKIP_COMMAND_KEY: Union[str, List[str]]
 
     # --- NEW: Auto Relay / Volume Config ---
     AUTO_RELAY: bool
@@ -473,6 +474,7 @@ class BotConfig:
             EMPTY_VC_PAUSE=getattr(config_module, "EMPTY_VC_PAUSE", True),
             AUTO_VC_START=getattr(config_module, "AUTO_VC_START", False),
             CLICK_CHECKBOX=getattr(config_module, "CLICK_CHECKBOX", True),
+            SKIP_COMMAND_KEY=getattr(config_module, "SKIP_COMMAND_KEY", ["Escape", "Escape"]),
             
             # --- NEW: Load Auto Relay / Volume Config ---
             AUTO_RELAY=getattr(config_module, "AUTO_RELAY", True),
