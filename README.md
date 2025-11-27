@@ -162,7 +162,8 @@ To enable playing songs from Spotify links:
 
 1.  Create a folder for your bot and place all the provided Python files (`bot.py`, `helper.py`, `omegle.py`, `tools.py`) inside.
 2.  Create a new file in the same folder named `.env`.
-3.  Open the `.env` file and add your credentials:
+3.  Open the `.env` file and add your credentials.
+4.  **Install Cookies**: To enable age restricted youtube music, use a browser extension (like "Get cookies.txt LOCALLY") to export your YouTube cookies. Rename the file to `cookies.txt` and place it in the same folder as `bot.py`.
 
 <!-- end list -->
 
@@ -184,7 +185,7 @@ COMMAND_CHANNEL_ID = 123456789012345678          # Channel for bot commands and 
 CHAT_CHANNEL_ID = 123456789012345678             # Channel for join/leave/ban notifications
 STREAMING_VC_ID = 123456789012345678             # Main streaming/music voice channel
 PUNISHMENT_VC_ID = 123456789012345678            # VC where users are moved for a first violation
-OMEGLE_VIDEO_URL = "https://umingle.com/video"   # URL for the streaming website
+OMEGLE_VIDEO_URL = "[https://umingle.com/video](https://umingle.com/video)"   # URL for the streaming website
 # Go to edge://version/ in edge and copy "Profile path" without the "/Default" or "/Profile X" at the end.
 EDGE_USER_DATA_DIR = "C:/Users/YourUser/AppData/Local/Microsoft/Edge/User Data/"
 EDGE_DRIVER_PATH = None # Optional: "C:/path/to/msedgedriver.exe"
