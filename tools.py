@@ -636,6 +636,7 @@ class BotState:
     screenshot_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     music_startup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     menu_repost_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    timeout_wake_event: asyncio.Event = field(default_factory=asyncio.Event, init=False)
 
     # --- Cooldowns ---
     cooldowns: Cooldowns = field(default_factory=dict)
@@ -725,6 +726,7 @@ class BotState:
 
     def __post_init__(self):
         """Called after the dataclass is initialized."""
+        self.timeout_wake_event = asyncio.Event()
         if self.config:
             self.music_volume = self.config.MUSIC_BOT_VOLUME
             self.music_enabled = self.config.MUSIC_ENABLED

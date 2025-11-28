@@ -234,20 +234,101 @@ async def periodic_times_report_update():
 async def before_periodic_times_report_update():
     await bot.wait_until_ready()
 
-@tasks.loop(minutes=1.111)
-async def periodic_timeouts_report_update():
-    # This helper function already contains all necessary logic:
-    # 1. Checks if state.timeouts_report_message_id exists.
-    # 2. Fetches the message.
-    # 3. Creates the new embed.
-    # 4. Edits the message.
-    # 5. Handles all errors, including discord.NotFound and triggering
-    #    a full menu repost if the message is missing.
-    await helper.update_timeouts_report_menu()
+@tasks.loop(seconds=1)
+async def smart_timeout_monitor():
+    """
+    Sleeps exactly until the next timeout expires using asyncio.wait_for.
+    Wakes up early if a new timeout is added via the event flag.
+    """
+    try:
+        current_time = time.time()
+        next_wake_time = None
+        expired_users = []
 
-@periodic_timeouts_report_update.before_loop
-async def before_periodic_timeouts_report_update():
+        # 1. Check State for Expirations and Next Wake Time
+        async with state.moderation_lock:
+            if not state.active_timeouts:
+                next_wake_time = None # Sleep indefinitely
+            else:
+                # Find the earliest expiration time
+                earliest_expiry = min(data['timeout_end'] for data in state.active_timeouts.values())
+                
+                # Check for anyone who has ALREADY expired
+                for user_id, data in list(state.active_timeouts.items()):
+                    if data['timeout_end'] <= current_time:
+                        expired_users.append((user_id, data))
+                
+                # If nobody expired yet, we sleep until the earliest expiry
+                if not expired_users:
+                    next_wake_time = earliest_expiry
+
+        # 2. Process Expired Users (if any found immediately)
+        if expired_users:
+            logger.info(f"Smart Monitor: Found {len(expired_users)} expired users.")
+            guild = bot.get_guild(bot_config.GUILD_ID)
+            if guild:
+                for user_id, data in expired_users:
+                    # Remove from state
+                    async with state.moderation_lock:
+                        if user_id in state.active_timeouts:
+                            del state.active_timeouts[user_id]
+                            # Log to history for !whois
+                            member_obj = guild.get_member(user_id)
+                            name = member_obj.name if member_obj else "Unknown"
+                            display_name = member_obj.display_name if member_obj else "Unknown"
+                            
+                            state.recent_untimeouts.append((
+                                user_id, name, display_name, datetime.now(timezone.utc), 
+                                "Expired Naturally", "System", None
+                            ))
+
+                    # Send Notification to Chat
+                    member = guild.get_member(user_id)
+                    start_ts = data.get('start_timestamp', 0)
+                    duration = int(current_time - start_ts)
+                    
+                    if member:
+                        # Helper function to send the embed
+                        await helper.send_timeout_removal_notification(member, duration, "Expired Naturally")
+            
+            # Update menu immediately
+            asyncio.create_task(helper.update_timeouts_report_menu())
+            # Loop immediately to re-check state
+            return
+
+        # 3. Go to Sleep
+        state.timeout_wake_event.clear() # Reset the alarm flag
+
+        if next_wake_time is None:
+            # No active timeouts? Sleep indefinitely until one is added.
+            logger.info("Smart Monitor: No active timeouts. Sleeping indefinitely.")
+            await state.timeout_wake_event.wait()
+            logger.info("Smart Monitor: Woke up (New timeout added).")
+        else:
+            # Sleep until the next expiration
+            sleep_duration = next_wake_time - current_time
+            if sleep_duration > 0:
+                logger.info(f"Smart Monitor: Sleeping for {sleep_duration:.1f}s until next expiration.")
+                try:
+                    # Sleep for duration OR until woke up by event
+                    await asyncio.wait_for(state.timeout_wake_event.wait(), timeout=sleep_duration)
+                    logger.info("Smart Monitor: Woke up early (New timeout added).")
+                except asyncio.TimeoutError:
+                    # Time passed naturally - loop back to process the expiration
+                    pass
+            else:
+                pass # Should process immediately in next loop
+
+    except Exception as e:
+        logger.error(f"Error in smart_timeout_monitor: {e}", exc_info=True)
+        await asyncio.sleep(5) # Safety buffer if it crashes
+
+@smart_timeout_monitor.before_loop
+async def before_smart_monitor():
     await bot.wait_until_ready()
+    # Failsafe: Ensure event exists if loaded from stale state
+    if not hasattr(state, 'timeout_wake_event'):
+        state.timeout_wake_event = asyncio.Event()
 
 def is_user_in_streaming_vc_with_camera(user: discord.Member) -> bool:
     streaming_vc = user.guild.get_channel(bot_config.STREAMING_VC_ID)
@@ -554,9 +635,12 @@ async def scan_and_shuffle_music() -> int:
         random.shuffle(shuffled_songs)
         state.shuffle_queue = shuffled_songs
         logger.info(f'Loaded and cached {len(state.all_songs)} songs. Shuffled {len(state.shuffle_queue)} into queue.')
-    try:
+    def save_cache_sync():
         with open(MUSIC_METADATA_CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(MUSIC_METADATA_CACHE, f)
+
+    try:
+        await asyncio.to_thread(save_cache_sync)
     except Exception as e:
         logger.error(f'Failed to save persistent metadata cache: {e}')
     return len(state.shuffle_queue)
@@ -1020,8 +1104,6 @@ async def manage_menu_task_presence():
             periodic_menu_update.start()
         if not periodic_times_report_update.is_running():
             periodic_times_report_update.start()
-        if not periodic_timeouts_report_update.is_running():
-            periodic_timeouts_report_update.start()
 
         # 2. Start Security Tasks
         if not capture_screenshots_task.is_running():
@@ -1043,8 +1125,6 @@ async def manage_menu_task_presence():
             periodic_menu_update.stop()
         if periodic_times_report_update.is_running():
             periodic_times_report_update.stop()
-        if periodic_timeouts_report_update.is_running():
-            periodic_timeouts_report_update.stop()
 
         # 2. Handle Security Tasks (Ban/Screenshots)
         # Only stop them if the grace task is NOT running (meaning the 39s passed or wasn't scheduled)
@@ -1154,6 +1234,13 @@ async def on_ready() -> None:
             periodic_cleanup.start()
         if not periodic_menu_update.is_running():
             periodic_menu_update.start()
+            
+        # --- ADDED SMART MONITOR START HERE ---
+        if not smart_timeout_monitor.is_running():
+            smart_timeout_monitor.start()
+            logger.info('Smart Timeout Monitor started.')
+        # --------------------------------------
+
         if not timeout_unauthorized_users_task.is_running():
             timeout_unauthorized_users_task.start()
         if not periodic_geometry_save.is_running():
@@ -2276,19 +2363,39 @@ async def msearch(ctx, *, query: str):
                 raise ValueError('Could not extract any song titles from the Spotify link.')
             
             await status_msg.edit(content=f'⏳ Found {len(youtube_queries)} track(s). Searching on YouTube...')
-            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-                for yt_query in youtube_queries:
+            
+            # Limit concurrent searches to 5 to avoid rate limits
+            sem = asyncio.Semaphore(5)
+
+            async def search_single_track(yt_query):
+                async with sem:
                     try:
-                        search_results = await asyncio.to_thread(ydl.extract_info, f'ytsearch1:{yt_query}', download=False)
-                        if search_results and search_results.get('entries'):
-                            video_info = search_results['entries'][0]
-                            title = video_info.get('title', '').lower()
-                            if '[deleted video]' in title or '[private video]' in title:
-                                logger.info(f"Skipping unavailable Spotify->YouTube result: {video_info.get('title')}")
-                                continue
-                            all_hits.append({'title': video_info.get('title', 'Unknown Title'), 'path': video_info.get('webpage_url', video_info.get('url')), 'is_stream': True, 'ctx': ctx})
-                    except Exception:
-                        logger.warning(f"Could not find a YouTube match for Spotify query '{yt_query}'")
+                        # Use a new YDL instance per thread or reuse the context manager safely
+                        # Note: reusing 'ydl' from the context manager is generally safe for extract_info
+                        return await asyncio.to_thread(ydl.extract_info, f'ytsearch1:{yt_query}', download=False)
+                    except Exception as e:
+                        logger.warning(f"Failed to search for {yt_query}: {e}")
+                        return None
+
+            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                tasks = [search_single_track(q) for q in youtube_queries]
+                results = await asyncio.gather(*tasks)
+
+            # Process results
+            for search_results in results:
+                if search_results and search_results.get('entries'):
+                    video_info = search_results['entries'][0]
+                    title = video_info.get('title', '').lower()
+                    if '[deleted video]' in title or '[private video]' in title:
+                        logger.info(f"Skipping unavailable Spotify->YouTube result: {video_info.get('title')}")
+                        continue
+                    
+                    all_hits.append({
+                        'title': video_info.get('title', 'Unknown Title'), 
+                        'path': video_info.get('webpage_url', video_info.get('url')), 
+                        'is_stream': True, 
+                        'ctx': ctx
+                    })
         
         except spotipy.exceptions.SpotifyException as e:
             logger.error(f"A Spotify API error occurred: {e}", exc_info=True)

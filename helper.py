@@ -753,6 +753,7 @@ class BotHelper:
                 "timed_by_id": moderator_id,
                 "start_timestamp": time.time(),
             }
+            self.state.timeout_wake_event.set()
 
     async def _create_departure_embed(
         self,
