@@ -241,6 +241,7 @@ async def smart_timeout_monitor():
     Wakes up early if a new timeout is added via the event flag.
     """
     try:
+        state.timeout_wake_event.clear()
         current_time = time.time()
         next_wake_time = None
         expired_users = []
@@ -295,9 +296,6 @@ async def smart_timeout_monitor():
             asyncio.create_task(helper.update_timeouts_report_menu())
             # Loop immediately to re-check state
             return
-
-        # 3. Go to Sleep
-        state.timeout_wake_event.clear() # Reset the alarm flag
 
         if next_wake_time is None:
             # No active timeouts? Sleep indefinitely until one is added.
