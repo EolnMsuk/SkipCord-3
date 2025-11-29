@@ -978,24 +978,26 @@ class OmegleHandler:
                                 ban_timestamp = datetime.now().strftime(
                                     "%Y-%m-%d_%H-%M-%S"
                                 )
-                                for i, (capture_time, ss_bytes) in enumerate(
-                                    screenshots_to_save
-                                ):
-                                    filename = f"ban-{ban_timestamp}-{i + 1}.jpg"
-                                    filepath = os.path.join(
-                                        self.config.SS_LOCATION, filename
-                                    )
-                                    try:
-                                        with open(filepath, "wb") as f:
-                                            f.write(ss_bytes)
-                                        logger.info(
-                                            f"Saved pre-ban screenshot to: {filepath}"
-                                        )
-                                        saved_filepaths.append(filepath)
-                                    except Exception as write_e:
-                                        logger.error(
-                                            f"Failed to write pre-ban screenshot {filename}: {write_e}"
-                                        )
+                                def save_images_sync(screenshots):
+                                    saved_paths = []
+                                    os.makedirs(self.config.SS_LOCATION, exist_ok=True)
+                                    # Calculate timestamp once for the batch
+                                    ban_ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                                    
+                                    for idx, (cap_time, data_bytes) in enumerate(screenshots):
+                                        fname = f"ban-{ban_ts}-{idx + 1}.jpg"
+                                        fpath = os.path.join(self.config.SS_LOCATION, fname)
+                                        try:
+                                            with open(fpath, "wb") as f:
+                                                f.write(data_bytes)
+                                            logger.info(f"Saved pre-ban screenshot to: {fpath}")
+                                            saved_paths.append(fpath)
+                                        except Exception as write_err:
+                                            logger.error(f"Failed to write screenshot {fname}: {write_err}")
+                                    return saved_paths
+
+                                # Run the save operation in a thread
+                                saved_filepaths = await asyncio.to_thread(save_images_sync, screenshots_to_save)
 
                                 logger.info(
                                     f"Successfully saved {len(screenshots_to_save)} pre-ban screenshots."

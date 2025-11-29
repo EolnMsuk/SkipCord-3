@@ -1165,7 +1165,7 @@ async def init_vc_moderation():
                         logger.info(f'Auto-muted/deafened {member.name} for camera off.')
                 except Exception as e:
                     logger.error(f'Failed to auto mute/deafen {member.name}: {e}')
-                state.camera_off_timers[member.id] = time.time()
+                schedule_violation(member, "camera")
 
 
 
@@ -1239,8 +1239,6 @@ async def on_ready() -> None:
             logger.info('Smart Timeout Monitor started.')
         # --------------------------------------
 
-        if not timeout_unauthorized_users_task.is_running():
-            timeout_unauthorized_users_task.start()
         if not periodic_geometry_save.is_running():
             periodic_geometry_save.start()
         if not music_playback_watchdog.is_running():
@@ -1416,6 +1414,78 @@ async def _graceful_security_shutdown():
         if state.empty_vc_grace_task:
             state.empty_vc_grace_task = None
 
+
+async def violation_countdown(member: discord.Member, violation_type: str, duration: int):
+    """
+    Waits for the duration. If not cancelled, punishes the user.
+    """
+    try:
+        # Wait the allowed time (e.g., 30 seconds)
+        await asyncio.sleep(duration)
+
+        # --- PUNISHMENT LOGIC ---
+        
+        # Double check they are still in the channel and violating
+        # (The task should have been cancelled if they weren't, but safety first)
+        if not member.voice or not member.voice.channel:
+            return
+
+        # Re-fetch config/state
+        guild = member.guild
+        punishment_vc = guild.get_channel(bot_config.PUNISHMENT_VC_ID)
+        
+        async with state.moderation_lock:
+            state.analytics['violation_events'] += 1
+            state.user_violations[member.id] = state.user_violations.get(member.id, 0) + 1
+            violation_count = state.user_violations[member.id]
+
+        reason = f"Camera off" if violation_type == "camera" else "Self-deafened"
+        
+        # 1. Move (First Offense)
+        if violation_count == 1:
+            if punishment_vc:
+                await member.move_to(punishment_vc, reason=f"{reason} timeout")
+                await helper.send_punishment_vc_notification(member, f"{reason} (1st Offense)", bot.user.mention)
+        
+        # 2. Timeout (Repeat Offense)
+        else:
+            t_duration = bot_config.TIMEOUT_DURATION_SECOND_VIOLATION if violation_count == 2 else bot_config.TIMEOUT_DURATION_THIRD_VIOLATION
+            await member.timeout(timedelta(seconds=t_duration), reason=f"{reason} (Repeat Offense)")
+            await helper._log_timeout_in_state(member, t_duration, reason, 'AutoMod')
+        
+        # Cleanup task reference
+        async with state.vc_lock:
+            state.violation_tasks.pop((member.id, violation_type), None)
+
+    except asyncio.CancelledError:
+        # This happens when the user complies (turns cam on) or leaves.
+        # We do nothing, effectively "forgiving" them.
+        pass
+    except Exception as e:
+        logger.error(f"Error in violation task for {member.name}: {e}")
+
+def schedule_violation(member: discord.Member, violation_type: str):
+    """Starts the countdown if not already running."""
+    key = (member.id, violation_type)
+    
+    # Don't schedule if already running
+    if key in state.violation_tasks and not state.violation_tasks[key].done():
+        return
+
+    duration = bot_config.CAMERA_OFF_ALLOWED_TIME if violation_type == "camera" else bot_config.DEAFEN_ALLOWED_TIME
+    
+    task = asyncio.create_task(violation_countdown(member, violation_type, duration))
+    state.violation_tasks[key] = task
+    logger.info(f"Started {violation_type} countdown for {member.name} ({duration}s)")
+
+def cancel_violation(member: discord.Member, violation_type: str):
+    """Cancels the countdown (User complied)."""
+    key = (member.id, violation_type)
+    if key in state.violation_tasks:
+        task = state.violation_tasks.pop(key)
+        task.cancel()
+        logger.info(f"Cancelled {violation_type} countdown for {member.name} (Complied/Left)")
+
 @bot.event
 @handle_errors
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
@@ -1448,86 +1518,74 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     state.vc_time_data[member.id]['total_time'] += duration
                     state.vc_time_data[member.id]['sessions'].append({'start': start_time, 'end': time.time(), 'duration': duration, 'vc_name': before.channel.name})
                     logger.info(f"VC Time Tracking: '{member.display_name}' ended session, adding {duration:.1f}s.")
-
+                    
     # --- Moderation Logic ---
     is_mod_active = state.vc_moderation_active
     if is_mod_active:
-        if is_now_in_mod_vc and (not was_in_mod_vc):
-            # User Joined a Moderated VC
-            if is_now_in_streaming_vc:
-                logger.info(f'VC JOIN: {member.display_name} ({member.name} | ID: {member.id}).')
-                asyncio.create_task(_handle_stream_vc_join(member))
-                if member.id not in bot_config.ALLOWED_USERS:
-                    asyncio.create_task(_join_camera_failsafe_check(member, bot_config))
-            
-            if member.id not in bot_config.ALLOWED_USERS:
-                async with state.vc_lock:
-                    # 1. Start Camera Timer
-                    state.camera_off_timers[member.id] = time.time()
-                    
-                    # 2. Start Deafen Timer (if they joined self-deafened but not server-deafened)
-                    if after.self_deaf and not after.deaf:
-                        state.deafen_timers[member.id] = time.time()
-                        logger.info(f"Started deafen timer for '{member.display_name}' (Joined Deafened).")
-                        
-                    logger.info(f"Started camera grace period timer for '{member.display_name}'.")
-                asyncio.create_task(_soundboard_grace_protocol(member, bot_config))
         
-        elif was_in_mod_vc and (not is_now_in_mod_vc):
-            # User Left a Moderated VC
-            if was_in_streaming_vc:
-                logger.info(f'VC LEAVE: {member.display_name} ({member.name} | ID: {member.id}).')
-            
-            # Clean up timers on leave
-            async with state.vc_lock:
-                state.deafen_timers.pop(member.id, None)
-                state.camera_off_timers.pop(member.id, None)
+        # 1. USER JOINS MODERATED VC
+        if is_now_in_mod_vc and (not was_in_mod_vc):
+            if member.id not in bot_config.ALLOWED_USERS:
+                # CHECK: Joined with Camera Off?
+                if not after.self_video:
+                    schedule_violation(member, "camera")
+                    # --- RESTORED: Immediate Deafen/Mute ---
+                    try:
+                        # Wait 1s to ensure connection is stable before editing
+                        await asyncio.sleep(1) 
+                        await member.edit(mute=True, deafen=True)
+                        logger.info(f"Restricted {member.display_name} (No Camera)")
+                    except Exception:
+                        pass
+                
+                # CHECK: Joined Deafened?
+                if after.self_deaf and not after.deaf:
+                    schedule_violation(member, "deafen")
+                    # (Optional: You can enforce server mute here too if you want)
 
+        # 2. USER LEAVES MODERATED VC
+        elif was_in_mod_vc and (not is_now_in_mod_vc):
+            # Cleanup: Cancel any pending punishments immediately
+            cancel_violation(member, "camera")
+            cancel_violation(member, "deafen")
+            # Attempt to unmute them as they leave (optional, good manners)
+            try:
+                await member.edit(mute=False, deafen=False)
+            except Exception:
+                pass
+
+        # 3. STATE CHANGE INSIDE VC
         elif was_in_mod_vc and is_now_in_mod_vc:
-            # User Switched / Changed State in Moderated VC
-            if before.channel.id == bot_config.STREAMING_VC_ID and after.channel.id != bot_config.STREAMING_VC_ID:
-                logger.info(f'VC SWITCH: {member.display_name} ({member.name} | ID: {member.id}).')
             
             # Camera Logic
-            camera_turned_on = not before.self_video and after.self_video
-            camera_turned_off = before.self_video and (not after.self_video)
-            
-            # Deafen Logic
-            is_self_deaf = after.self_deaf and not after.deaf
-            was_self_deaf = before.self_deaf and not before.deaf
-            
-            if member.id not in bot_config.ALLOWED_USERS:
-                # Handle Camera
-                if camera_turned_off:
-                    async with state.vc_lock:
-                        state.camera_off_timers[member.id] = time.time()
+            if before.self_video and not after.self_video:
+                # Camera turned OFF -> Start Timer & Restrict
+                if member.id not in bot_config.ALLOWED_USERS:
+                    schedule_violation(member, "camera")
+                    # --- RESTORED: Immediate Deafen/Mute ---
                     try:
-                        if state.vc_moderation_active:
-                            await member.edit(mute=True, deafen=True)
-                            logger.info(f"Auto-muted/deafened '{member.display_name}' for turning camera off.")
-                    except Exception as e:
-                        logger.error(f"Failed to auto-mute '{member.display_name}': {e}")
-                elif camera_turned_on:
-                    async with state.vc_lock:
-                        state.camera_off_timers.pop(member.id, None)
-                    if not state.hush_override_active and state.vc_moderation_active:
-                        try:
-                            await member.edit(mute=False, deafen=False)
-                            logger.info(f"Auto-unmuted '{member.display_name}' after turning camera on.")
-                        except Exception as e:
-                            logger.error(f"Failed to auto-unmute '{member.display_name}': {e}")
+                        await member.edit(mute=True, deafen=True)
+                        logger.info(f"Restricted {member.display_name} (Turned Camera Off)")
+                    except Exception:
+                        pass
 
-                # Handle Self-Deafen
-                if is_self_deaf and not was_self_deaf:
-                    async with state.vc_lock:
-                        state.deafen_timers[member.id] = time.time()
-                        logger.info(f"Started deafen timer for '{member.display_name}'.")
-                elif not is_self_deaf and was_self_deaf:
-                    async with state.vc_lock:
-                        state.deafen_timers.pop(member.id, None)
-                        logger.info(f"Stopped deafen timer for '{member.display_name}'.")
+            elif not before.self_video and after.self_video:
+                # Camera turned ON -> Cancel Timer & Unrestrict
+                cancel_violation(member, "camera")
+                # --- RESTORED: Unmute/Undeafen ---
+                try:
+                    await member.edit(mute=False, deafen=False)
+                    logger.info(f"Unrestricted {member.display_name} (Camera On)")
+                except Exception:
+                    pass
 
-    # --- Omegle Automation Logic ---
+            # Deafen Logic
+            if not before.self_deaf and after.self_deaf:
+                 schedule_violation(member, "deafen")
+            elif before.self_deaf and not after.self_deaf:
+                 cancel_violation(member, "deafen")
+
+    # --- Omegle Automation Logic (Keep existing code below...) ---
     is_relevant_event = was_in_streaming_vc or is_now_in_streaming_vc
     if is_relevant_event and state.omegle_enabled and (not state.is_banned):
         # Calculate active camera users
@@ -1579,11 +1637,9 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                         logger.error(f'Failed to send auto-refresh notification: {e}')
             
             # Start the 39s Grace Period for Security Tasks
-            # Cancel existing task if somehow running to reset timer
             if state.empty_vc_grace_task and not state.empty_vc_grace_task.done():
                 state.empty_vc_grace_task.cancel()
             
-            # _graceful_security_shutdown must be defined in bot.py
             state.empty_vc_grace_task = asyncio.create_task(_graceful_security_shutdown())
 
     # --- Punishment VC Cleanup ---
@@ -1874,7 +1930,6 @@ async def daily_auto_stats_clear() -> None:
                 state.active_vc_sessions = {}
                 state.analytics = {'command_usage': {}, 'command_usage_by_user': {}, 'violation_events': 0}
                 state.user_violations = {}
-                state.camera_off_timers = {}
                 if current_members:
                     current_time = time.time()
                     for member in current_members:
@@ -1884,153 +1939,7 @@ async def daily_auto_stats_clear() -> None:
             await channel.send('✅ Statistics automatically cleared and tracking restarted!')
         except Exception as e:
             logger.error(f'Daily auto-stats failed during state clearing: {e}', exc_info=True)
-@tasks.loop(seconds=15)
-@handle_errors
-async def timeout_unauthorized_users_task() -> None:
-    async with state.vc_lock:
-        is_active = state.vc_moderation_active
-    if not is_active:
-        return
-    
-    guild = bot.get_guild(bot_config.GUILD_ID)
-    if not guild:
-        return
-        
-    punishment_vc = guild.get_channel(bot_config.PUNISHMENT_VC_ID)
-    if not punishment_vc:
-        logger.warning('Punishment VC not found, moderation task cannot run.')
-        return
 
-    # Identify all moderated VCs
-    moderated_vcs = []
-    if (streaming_vc := guild.get_channel(bot_config.STREAMING_VC_ID)):
-        moderated_vcs.append(streaming_vc)
-    for vc_id in bot_config.ALT_VC_ID:
-        if (alt_vc := guild.get_channel(vc_id)):
-            if alt_vc not in moderated_vcs:
-                moderated_vcs.append(alt_vc)
-    
-    if not moderated_vcs:
-        logger.warning('No valid moderated VCs found.')
-        return
-
-    users_to_check = []
-    violation_type = {} # Map member_id -> "camera" or "deafen"
-    current_time = time.time()
-
-    # --- Identify Violations ---
-    async with state.vc_lock:
-        # 1. Check Camera Timers
-        for member_id, start_time in list(state.camera_off_timers.items()):
-            if current_time - start_time >= bot_config.CAMERA_OFF_ALLOWED_TIME:
-                users_to_check.append(member_id)
-                violation_type[member_id] = "camera"
-
-        # 2. Check Deafen Timers
-        # Only check if they aren't already flagged for a camera violation
-        for member_id, start_time in list(state.deafen_timers.items()):
-            if member_id not in users_to_check:
-                if current_time - start_time >= bot_config.DEAFEN_ALLOWED_TIME:
-                    users_to_check.append(member_id)
-                    violation_type[member_id] = "deafen"
-
-    # --- Process Violations ---
-    for member_id in users_to_check:
-        member = guild.get_member(member_id)
-        
-        # Cleanup if member is gone or no longer in voice
-        if not member or not member.voice or (not member.voice.channel):
-            async with state.vc_lock:
-                state.camera_off_timers.pop(member_id, None)
-                state.deafen_timers.pop(member_id, None)
-            continue
-            
-        vc = member.voice.channel
-        v_type = violation_type.get(member_id, "camera")
-
-        # Verify violation is still valid inside the loop (Race condition check)
-        async with state.vc_lock:
-            if v_type == "camera":
-                timer = state.camera_off_timers.get(member_id)
-                allowed_time = bot_config.CAMERA_OFF_ALLOWED_TIME
-                # Reset timer now because we are about to punish
-                state.camera_off_timers.pop(member_id, None) 
-            else:
-                timer = state.deafen_timers.get(member_id)
-                allowed_time = bot_config.DEAFEN_ALLOWED_TIME
-                # Reset timer now because we are about to punish
-                state.deafen_timers.pop(member_id, None)
-
-            # If timer was removed or they fixed it just in time, skip
-            if not timer or time.time() - timer < allowed_time:
-                continue
-
-        # Increment Violation Count
-        violation_count = 0
-        async with state.moderation_lock:
-            state.analytics['violation_events'] += 1
-            state.user_violations[member_id] = state.user_violations.get(member_id, 0) + 1
-            violation_count = state.user_violations[member_id]
-
-        # Define messages based on violation type
-        if v_type == "deafen":
-            violation_reason = f"Self-deafened for >5 mins in {vc.name}."
-            dm_reason = "being self-deafened for too long"
-        else:
-            violation_reason = f"Camera off in {vc.name}."
-            dm_reason = "not having a camera on"
-
-        try:
-            punishment_applied = ''
-            
-            # --- Punishment Logic ---
-            if violation_count == 1:
-                # First Offense: Move to Punishment VC
-                await member.move_to(punishment_vc, reason=violation_reason)
-                punishment_applied = 'moved'
-                await helper.send_punishment_vc_notification(member, violation_reason, bot.user.mention)
-                logger.info(f'Moved {member.name} to PUNISHMENT VC (Reason: {v_type}).')
-                
-            elif violation_count == 2:
-                # Second Offense: Short Timeout
-                timeout_duration = bot_config.TIMEOUT_DURATION_SECOND_VIOLATION
-                reason = f'2nd violation ({v_type}) in {vc.name}.'
-                await member.timeout(timedelta(seconds=timeout_duration), reason=reason)
-                punishment_applied = 'timed out'
-                await helper._log_timeout_in_state(member, timeout_duration, reason, 'AutoMod')
-                asyncio.create_task(helper.update_timeouts_report_menu())
-                logger.info(f'Timed out {member.name} for {timeout_duration}s (Reason: {v_type}).')
-                
-            else:
-                # Third+ Offense: Long Timeout
-                timeout_duration = bot_config.TIMEOUT_DURATION_THIRD_VIOLATION
-                reason = f'Repeated violation ({v_type}) in {vc.name}.'
-                await member.timeout(timedelta(seconds=timeout_duration), reason=reason)
-                punishment_applied = 'timed out'
-                await helper._log_timeout_in_state(member, timeout_duration, reason, 'AutoMod')
-                asyncio.create_task(helper.update_timeouts_report_menu())
-                logger.info(f'Timed out {member.name} for {timeout_duration}s (Reason: {v_type}).')
-
-            # --- Send DM Notification ---
-            is_dm_disabled = False
-            async with state.moderation_lock:
-                is_dm_disabled = member_id in state.users_with_dms_disabled
-            
-            if not is_dm_disabled:
-                try:
-                    await member.send(f"You've been {punishment_applied} for {dm_reason} in the voice channel.")
-                except discord.Forbidden:
-                    async with state.moderation_lock:
-                        state.users_with_dms_disabled.add(member_id)
-                except Exception as e:
-                    logger.error(f'Failed to send violation DM to {member.name}: {e}')
-
-        except discord.Forbidden:
-            logger.warning(f'Missing permissions to punish {member.name} in {vc.name}.')
-        except discord.HTTPException as e:
-            logger.error(f'Failed to punish {member.name} in {vc.name}: {e}')
-        except Exception as e:
-            logger.error(f'An unexpected error occurred during punishment for {member.name}: {e}')
 @tasks.loop(seconds=33)
 async def music_playback_watchdog():
     if not state.music_enabled:

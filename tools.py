@@ -645,8 +645,12 @@ class BotState:
     last_omegle_command_time: float = 0.0
 
     # --- Moderation State ---
-    deafen_timers: Dict[int, float] = field(default_factory=dict)
-    camera_off_timers: Dict[int, float] = field(default_factory=dict)
+    # Stores active violation countdown tasks.
+    # Key: (member_id, violation_type), Value: asyncio.Task
+    violation_tasks: Dict[Tuple[int, str], asyncio.Task] = field(default_factory=dict)
+    
+    # REMOVED: deafen_timers and camera_off_timers (Replaced by violation_tasks)
+
     user_violations: ViolationCounts = field(default_factory=dict)
     hush_override_active: bool = False
     vc_moderation_active: bool = True
@@ -722,7 +726,7 @@ class BotState:
     # --- Message IDs (for editing) ---
     music_menu_message_id: Optional[int] = None
     times_report_message_id: Optional[int] = None
-    timeouts_report_message_id: Optional[int] = None # <-- ADDED
+    timeouts_report_message_id: Optional[int] = None
 
     def __post_init__(self):
         """Called after the dataclass is initialized."""
@@ -883,7 +887,7 @@ class BotState:
             "ban_message_id": self.ban_message_id,
             "music_menu_message_id": self.music_menu_message_id,
             "times_report_message_id": self.times_report_message_id,
-            "timeouts_report_message_id": self.timeouts_report_message_id, # <-- ADDED
+            "timeouts_report_message_id": self.timeouts_report_message_id,
             "vc_moderation_active": self.vc_moderation_active,
             "last_vc_connect_fail_time": self.last_vc_connect_fail_time,
         }
@@ -1078,12 +1082,6 @@ class BotState:
                     for k, v in self.move_command_cooldowns.items()
                     if current_time - v < 3900  # ~1 hour
                 }
-                
-            self.deafen_timers = {
-                k: v
-                for k, v in self.deafen_timers.items()
-                if current_time - v < self.config.DEAFEN_ALLOWED_TIME * 2
-            }
             
             self.active_timeouts = {
                 k: v
@@ -1107,12 +1105,6 @@ class BotState:
 
             if len(self.recently_banned_ids) > 200:
                 self.recently_banned_ids.clear()
-
-            self.camera_off_timers = {
-                k: v
-                for k, v in self.camera_off_timers.items()
-                if current_time - v < self.config.CAMERA_OFF_ALLOWED_TIME * 2
-            }
 
             # --- Clean VC Time Data (keep last 7 days) ---
             seven_days_ago_ts = current_time - 7 * 24 * 3600
