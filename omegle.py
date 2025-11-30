@@ -6,6 +6,7 @@ import re
 import base64
 import time
 import random
+import atexit  # <--- Added atexit
 from datetime import datetime, timezone
 from functools import wraps
 from typing import Optional, Union, List, Tuple
@@ -208,6 +209,20 @@ class OmegleHandler:
         self._driver_initialized = False  # Flag to track if driver is ready
         self.state: Optional[BotState] = None  # To be attached by the main bot
         self._init_lock = asyncio.Lock()  # Lock to prevent concurrent initializations
+
+    def _sync_force_close(self):
+        """
+        Synchronous cleanup method for atexit. 
+        Forces the driver to quit if it's still active on interpreter shutdown.
+        """
+        if self.driver:
+            try:
+                # Direct call to quit() since we are shutting down and async loop might be dead
+                self.driver.quit()
+                logger.info("atexit: Selenium driver force-closed.")
+            except Exception as e:
+                # Use print because logger might be dead during atexit
+                print(f"atexit: Error closing driver: {e}")
 
     async def _set_volume(self, volume_percentage: int) -> bool:
         """
@@ -445,6 +460,10 @@ class OmegleHandler:
                         webdriver.Edge, options=options
                     )
                     logger.info("Automatic driver management successful.")
+                    
+                    # --- Register atexit cleanup ---
+                    atexit.register(self._sync_force_close)
+
                 except WebDriverException as auto_e:
                     logger.warning(f"Automatic driver management failed: {auto_e}")
                     # Fallback to user-provided path if available
@@ -463,6 +482,10 @@ class OmegleHandler:
                                 webdriver.Edge, service=service, options=options
                             )
                             logger.info("Fallback driver path successful.")
+                            
+                            # --- Register atexit cleanup (Fallback) ---
+                            atexit.register(self._sync_force_close)
+
                         except Exception as fallback_e:
                             logger.error(
                                 f"Fallback driver path also failed: {fallback_e}"
@@ -523,11 +546,9 @@ class OmegleHandler:
                 logger.info(f"Navigating to {self.config.OMEGLE_VIDEO_URL}...")
                 await asyncio.to_thread(self.driver.get, self.config.OMEGLE_VIDEO_URL)
                 
-                # --- START: FIX ---
                 # Set driver as initialized *before* calling any wrapped methods
                 self._driver_initialized = True
                 logger.info("Driver initialized, running startup refresh logic...")
-                # --- END: FIX ---
 
                 # Run the !refresh logic on startup. This includes the delay and the checkbox click logic.
                 await self.refresh(ctx=None)
@@ -606,6 +627,12 @@ class OmegleHandler:
 
     async def close(self) -> None:
         """Shuts down the Selenium driver and browser."""
+        # --- Unregister atexit to prevent double execution ---
+        try:
+            atexit.unregister(self._sync_force_close)
+        except Exception:
+            pass
+
         if self.driver is not None:
             try:
                 await asyncio.to_thread(self.driver.quit)
@@ -798,9 +825,8 @@ class OmegleHandler:
                             "Page.captureScreenshot",
                             {"format": "jpeg", "quality": SCREENSHOT_JPEG_QUALITY},
                         )
-                        # <<< START: FIX >>>
+                        # Decode base64 data
                         img_bytes = base64.b64decode(screenshot_data["data"])
-                        # <<< END: FIX >>>
                         with open(filepath, "wb") as f:
                             f.write(img_bytes)
                         return True
@@ -883,9 +909,7 @@ class OmegleHandler:
                     "Page.captureScreenshot",
                     {"format": "jpeg", "quality": SCREENSHOT_JPEG_QUALITY},
                 )
-                # <<< START: FIX >>>
                 return base64.b64decode(screenshot_data["data"])
-                # <<< END: FIX >>>
 
             screenshot_bytes = await asyncio.to_thread(capture_jpeg_bytes)
 

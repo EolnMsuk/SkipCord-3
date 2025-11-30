@@ -130,10 +130,10 @@ async def load_state_async() -> None:
         helper.state = state
         omegle_handler.state = state
 helper = BotHelper(bot, state, bot_config, save_state_async, lambda: asyncio.create_task(play_next_song()), omegle_handler=omegle_handler, update_menu_func=lambda: asyncio.create_task(update_music_menu()), trigger_repost_func=lambda: asyncio.create_task(_trigger_full_menu_repost()))
-@tasks.loop(minutes=15.333)
+@tasks.loop(minutes=15.313)
 async def periodic_state_save() -> None:
     await save_state_async()
-@tasks.loop(minutes=17.444)
+@tasks.loop(minutes=16.131)
 async def periodic_geometry_save():
     if omegle_handler:
         geometry = await omegle_handler.get_window_geometry()
@@ -180,7 +180,7 @@ async def update_music_menu():
         state.music_menu_message_id = None
     except Exception as e:
         logger.error(f'Failed to update music menu: {e}', exc_info=True)
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=2.971)
 async def auto_delete_old_commands():
     try:
         channel = bot.get_channel(bot_config.COMMAND_CHANNEL_ID)
@@ -208,7 +208,7 @@ async def auto_delete_old_commands():
 @auto_delete_old_commands.before_loop
 async def before_auto_delete_old_commands():
     await bot.wait_until_ready()
-@tasks.loop(minutes=9.555)
+@tasks.loop(minutes=9.517)
 async def periodic_times_report_update():
     if not hasattr(state, 'times_report_message_id') or not state.times_report_message_id:
         return
@@ -234,7 +234,7 @@ async def periodic_times_report_update():
 async def before_periodic_times_report_update():
     await bot.wait_until_ready()
 
-@tasks.loop(seconds=1)
+@tasks.loop(seconds=7.51)
 async def smart_timeout_monitor():
     """
     Sleeps exactly until the next timeout expires using asyncio.wait_for.
@@ -504,7 +504,6 @@ async def ensure_voice_connection() -> bool:
         if 'Already connected' in str(e):
             logger.warning(f"Ensure VC: Race condition ('Already connected') caught. Retrieving existing client...")
             
-            # --- START FIX ---
             # Don't check .is_connected(). Just get the client object.
             # guild.voice_client is the "official" way to get the client for a guild.
             existing_client = guild.voice_client 
@@ -526,13 +525,11 @@ async def ensure_voice_connection() -> bool:
                 return True # We have a client and it's (now) in the right channel
             
             else:
-                # This is the state from the logs: "Already connected" but guild.voice_client is None.
-                # This is a deep library-level bug. We can't fix it, only break the loop.
-                logger.error("Ensure VC: 'Already connected' error, but guild.voice_client is None! This is an inconsistent state.")
-                # We must not return True, as we failed.
-                error_to_report = e # Let the error reporting logic handle it.
-            # --- END FIX ---
-
+                # The library thinks we are connected, but the client object is missing.
+                # This is a critical desync. We must fail immediately so the calling function stops.
+                logger.critical("Ensure VC: 'Already connected' error, but guild.voice_client is None! Bot is in a ghost state.")
+                bot.voice_client_music = None
+                return False 
         else:
             logger.error(f'Ensure VC: Reporting non-race ClientException.', exc_info=True)
             error_to_report = e
@@ -1160,9 +1157,13 @@ async def init_vc_moderation():
             if not member.bot and member.id not in bot_config.ALLOWED_USERS and (not (member.voice and member.voice.self_video)):
                 try:
                     await asyncio.sleep(1)
-                    if state.vc_moderation_active:
-                        await member.edit(mute=True, deafen=True)
-                        logger.info(f'Auto-muted/deafened {member.name} for camera off.')
+                    # Re-fetch member to check if they turned camera on during sleep
+                    current_member = guild.get_member(member.id)
+                    if state.vc_moderation_active and current_member and current_member.voice and not current_member.voice.self_video:
+                        await current_member.edit(mute=True, deafen=True)
+                        logger.info(f'Auto-muted/deafened {current_member.name} for camera off.')
+                    else:
+                        logger.info(f'Skipped auto-mute for {member.name} (Camera turned on during startup grace period).')
                 except Exception as e:
                     logger.error(f'Failed to auto mute/deafen {member.name}: {e}')
                 schedule_violation(member, "camera")
@@ -1529,12 +1530,20 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 # CHECK: Joined with Camera Off?
                 if not after.self_video:
                     schedule_violation(member, "camera")
-                    # --- RESTORED: Immediate Deafen/Mute ---
+                    # --- RESTORED: Immediate Deafen/Mute (With Re-Check) ---
                     try:
                         # Wait 1s to ensure connection is stable before editing
                         await asyncio.sleep(1) 
-                        await member.edit(mute=True, deafen=True)
-                        logger.info(f"Restricted {member.display_name} (No Camera)")
+                        
+                        # Re-fetch member to check if they turned camera on during sleep
+                        current_member = member.guild.get_member(member.id)
+                        
+                        # Only deafen if they are still in VC and camera is still OFF
+                        if current_member and current_member.voice and not current_member.voice.self_video:
+                            await current_member.edit(mute=True, deafen=True)
+                            logger.info(f"Restricted {current_member.display_name} (No Camera)")
+                        else:
+                            logger.info(f"Aborted restriction for {member.display_name} (Camera turned on during grace period)")
                     except Exception:
                         pass
                 
@@ -1818,7 +1827,7 @@ async def _trigger_full_menu_repost():
             logger.info('Successfully completed triggered full menu repost.')
         except Exception as e:
             logger.error(f'Error during triggered menu repost: {e}', exc_info=True)
-@tasks.loop(minutes=20.31)
+@tasks.loop(minutes=31.111)
 async def periodic_menu_update() -> None:
     # Prevent this task from running if a reactive repost (triggered by an interaction error) 
     # is currently in progress. This prevents fighting over the channel.
@@ -1940,27 +1949,62 @@ async def daily_auto_stats_clear() -> None:
         except Exception as e:
             logger.error(f'Daily auto-stats failed during state clearing: {e}', exc_info=True)
 
-@tasks.loop(seconds=33)
+@tasks.loop(seconds=30.13) 
 async def music_playback_watchdog():
     if not state.music_enabled:
         return
+
     guild = bot.get_guild(bot_config.GUILD_ID)
     if not guild:
         return
+
     streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
     if not streaming_vc:
         return
+
     human_listeners_with_cam = [m for m in streaming_vc.members if not m.bot and m.id not in bot_config.ALLOWED_USERS and m.voice and m.voice.self_video]
     is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
+
+    # --- FIX: State Synchronization (Split-Brain Fix) ---
+    # Ensure BotState matches the reality of the Voice Client
+    async with state.music_lock:
+        if is_bot_connected:
+            real_is_playing = bot.voice_client_music.is_playing()
+            real_is_paused = bot.voice_client_music.is_paused()
+            
+            # If reality disagrees with state, force state to match reality
+            if state.is_music_playing != real_is_playing:
+                logger.warning(f"Watchdog: State sync - is_music_playing corrected from {state.is_music_playing} to {real_is_playing}")
+                state.is_music_playing = real_is_playing
+            
+            if state.is_music_paused != real_is_paused:
+                logger.warning(f"Watchdog: State sync - is_music_paused corrected from {state.is_music_paused} to {real_is_paused}")
+                state.is_music_paused = real_is_paused
+            
+            # If we are neither playing nor paused (stopped/idle), ensure current_song is cleared
+            if not real_is_playing and not real_is_paused and not state.is_processing_song:
+                if state.current_song is not None:
+                     logger.warning("Watchdog: State sync - Cleared stuck current_song.")
+                     state.current_song = None
+        else:
+            # If bot is not connected, it cannot be playing
+            if state.is_music_playing:
+                state.is_music_playing = False
+                state.current_song = None
+    # --- END FIX ---
+
+    # Existing Watchdog Logic (Presence Management)
     if human_listeners_with_cam and (not is_bot_connected) or (not human_listeners_with_cam and is_bot_connected):
         logger.info('Watchdog: Mismatch in bot presence and listeners. Triggering presence manager.')
         asyncio.create_task(manage_music_presence())
         return
+
+    # Existing Watchdog Logic (Idle Restart)
     async with state.music_lock:
         is_processing = state.is_processing_song
+
     if human_listeners_with_cam and is_bot_connected:
         if not bot.voice_client_music.is_playing() and (not bot.voice_client_music.is_paused()) and (not is_processing):
-            # FIX: Check if we actually have content to play to avoid infinite loop
             async with state.music_lock:
                 has_content = bool(state.all_songs or state.shuffle_queue or state.active_playlist or state.search_queue)
             
