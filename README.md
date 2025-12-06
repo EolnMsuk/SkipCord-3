@@ -1,6 +1,6 @@
 # SkipCord-3.9: A Discord / Omegle / Music Bot
 
-This Discord bot integrates a group Omegle screenshare, allowing the VC users to actively Skip, Report, Pause etc through dynamically embedded buttons. It safeguards your community with intelligent auto-moderation and includes a complete music system, automated ban detection with evidence logging and detailed daily analytics.
+This bot integrates a group Omegle screenshare to a Discord VC, allowing the VC users to actively Skip, Report, Pause etc through dynamically embedded buttons. It safeguards your community with intelligent auto-moderation and includes a complete music system, automated ban detection with evidence logging and detailed daily analytics.
 
   - [Key Features](#-key-features)
   - [Commands](#-command-list)
