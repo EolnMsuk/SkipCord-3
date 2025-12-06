@@ -13,7 +13,7 @@ This bot integrates a group Omegle screenshare to a Discord VC, allowing the VC 
 
   * **Intuitive Button Menus**: Users control the stream (`!skip` ⏭️, `!refresh` 🔄, `!report` 🚩) and music (`!mskip`, `!mpauseplay`, `!mclear`) with persistent button menus. Requires being in the Streaming VC with camera on for most actions.
   * **Cloudflare & Security Bypass**: Includes advanced logic to detect and click "Verify you are human" (Cloudflare/Turnstile) checkboxes inside iframes, ensuring the stream recovers automatically after refreshes.
-  * **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine. *Version 3.7 adds connection safety checks to prevent crashes if hotkeys are pressed while disconnected.*
+  * **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!skip`, `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine.
   * **Auto-Start**: Automatically starts the stream by running `!skip` as soon as the first user joins the streaming VC with their camera on (configurable).
   * **Smart Auto-Pause & Graceful Shutdown**: Triggers a refresh *only* when the last user leaves. Includes a **14-second grace period** prevents the bot from rapidly toggling security tasks if a user rejoins quickly.
   * **Public Action Feed**: Button commands like `!skip` are announced publicly in the command channel (with auto-delete) for better transparency.
