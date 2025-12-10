@@ -317,7 +317,9 @@ ALLOWED_STATS_COMMANDS = {
     "!display",
     "!move",
     "!timer",
-    "!timerstop",
+    "!timerstop"
+    "!vote",
+    "!endvote",
 }
 
 

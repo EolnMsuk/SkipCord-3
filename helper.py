@@ -1966,6 +1966,8 @@ class BotHelper:
             "`!join` - DMs a join invite to all users with an admin role.\n"
             "`!clearstats` - Clears all statistical data.\n"
             "`!clearwhois` - Clears all historical event data.\n"
+            "`!vote <roles or users>` - Starts a Smash or Pass vote.\n"
+            "`!endvote` - Stops the current Smash or Pass voting system.\n"
             "`!shutdown` - Safely shuts down the bot."
         )
         
