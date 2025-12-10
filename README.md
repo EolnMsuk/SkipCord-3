@@ -56,7 +56,7 @@ This bot integrates a group Omegle screenshare to a Discord VC, allowing the VC 
   * **State Persistence**: All critical data—stats, violations, timeouts, event history, playlists, window geometry, and menu message IDs—is saved to `data.json`.
   * **VC Time Tracking**: Tracks cumulative time users spend in moderated voice channels, with daily leaderboards (`!times`).
 
-<img width="1102" height="1084" alt="console" src="https://github.com/user-attachments/assets/ce468df4-4a6f-46fe-8b87-beef2f5f165a" />
+<img width="1305" height="953" alt="console" src="https://github.com/user-attachments/assets/9adaac05-e873-43ca-a7f9-a96af9728805" />
 
 ## 📋 Command List
 
