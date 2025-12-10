@@ -205,7 +205,7 @@ def format_duration(delta: Union[timedelta, int]) -> str:
         total_seconds = int(delta)
 
     if total_seconds < 60:
-        return "1m"  # Minimum resolution
+        return "1min"  # <--- CHANGE 1: "1m" to "1min"
     if total_seconds < 0:
         total_seconds = 0
 
@@ -242,9 +242,9 @@ def format_duration(delta: Union[timedelta, int]) -> str:
     if total_seconds < SECONDS_IN_DAY:
         minutes, _ = divmod(remainder, SECONDS_IN_MINUTE)
         if minutes > 0:
-            parts.append(f"{minutes}m")
+            parts.append(f"{minutes}min")  # <--- CHANGE 2: "{minutes}m" to "{minutes}min"
 
-    return " ".join(parts) if parts else "1m"
+    return " ".join(parts) if parts else "1min"  # <--- CHANGE 3: "1m" to "1min"
 
 
 def get_discord_age(created_at: datetime) -> str:
@@ -316,6 +316,8 @@ ALLOWED_STATS_COMMANDS = {
     "!unbanall",
     "!display",
     "!move",
+    "!timer",
+    "!timerstop",
 }
 
 
@@ -389,6 +391,10 @@ class BotConfig:
     EMPTY_VC_PAUSE: bool
     AUTO_VC_START: bool
     CLICK_CHECKBOX: bool
+
+    # --- Nickname Config ---
+    AUTO_NICKNAME: bool
+    NICKNAME_TAG: str
 
     # --- NEW: Auto Relay / Volume Config ---
     AUTO_RELAY: bool
@@ -473,6 +479,15 @@ class BotConfig:
             EMPTY_VC_PAUSE=getattr(config_module, "EMPTY_VC_PAUSE", True),
             AUTO_VC_START=getattr(config_module, "AUTO_VC_START", False),
             CLICK_CHECKBOX=getattr(config_module, "CLICK_CHECKBOX", True),
+
+            # --- Nickname Config (Validation: Disabled if tag is missing/None) ---
+            AUTO_NICKNAME=(
+                bool(getattr(config_module, "AUTO_NICKNAME", False))
+                if (getattr(config_module, "AUTO_NICKNAME", None) is not None 
+                    and getattr(config_module, "NICKNAME_TAG", None) is not None)
+                else False
+            ),
+            NICKNAME_TAG=str(getattr(config_module, "NICKNAME_TAG", "")),
             
             # --- NEW: Load Auto Relay / Volume Config ---
             AUTO_RELAY=getattr(config_module, "AUTO_RELAY", True),
@@ -665,6 +680,7 @@ class BotState:
     omegle_disabled_users: Set[int] = field(default_factory=set)
     omegle_enabled: bool = True
     relay_command_sent: bool = False
+    last_relay_timestamp: float = 0.0
     leave_buffer: List[dict] = field(default_factory=list, init=False)
     leave_batch_task: Optional[asyncio.Task] = field(default=None, init=False)
     empty_vc_grace_task: Optional[asyncio.Task] = field(default=None, init=False)
@@ -690,6 +706,10 @@ class BotState:
     last_auto_pause_time: float = 0.0
     vc_time_data: VcTimeData = field(default_factory=dict)
     active_vc_sessions: ActiveVcSessions = field(default_factory=dict)
+    
+    # --- Timer State ---
+    # Stores the active asyncio Task for each user's timer
+    active_user_timers: Dict[int, asyncio.Task] = field(default_factory=dict, init=False)
 
     # --- Music State ---
     music_enabled: bool = True
@@ -716,6 +736,7 @@ class BotState:
     window_size: Optional[Dict[str, int]] = field(default=None)
     window_position: Optional[Dict[str, int]] = field(default=None)
     is_banned: bool = False
+    active_votes: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     last_vc_connect_fail_time: float = 0.0
     ban_message_id: Optional[int] = None
     ban_screenshots: ScreenshotBuffer = field(default_factory=list, init=False)
@@ -888,6 +909,7 @@ class BotState:
             "music_menu_message_id": self.music_menu_message_id,
             "times_report_message_id": self.times_report_message_id,
             "timeouts_report_message_id": self.timeouts_report_message_id,
+            "active_votes": self.active_votes,
             "vc_moderation_active": self.vc_moderation_active,
             "last_vc_connect_fail_time": self.last_vc_connect_fail_time,
         }
@@ -1030,6 +1052,10 @@ class BotState:
         state.window_size = data.get("window_size", None)
         state.window_position = data.get("window_position", None)
         state.is_banned = data.get("is_banned", False)
+        # Ensure keys are integers (Message IDs)
+        raw_votes = data.get("active_votes", {})
+        state.active_votes = {int(k): v for k, v in raw_votes.items()}
+        state.ban_message_id = data.get("ban_message_id", None)
         state.ban_message_id = data.get("ban_message_id", None)
         state.music_menu_message_id = data.get("music_menu_message_id", None)
         state.times_report_message_id = data.get("times_report_message_id", None)

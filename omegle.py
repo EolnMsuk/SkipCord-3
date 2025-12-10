@@ -269,14 +269,27 @@ class OmegleHandler:
 
     async def _attempt_send_relay(self) -> bool:
         """
-        Attempts to send the '/relay' command and set volume based on config.
-        Updated for Umingle/Ome.tv compatibility using ENTER key instead of clicking buttons.
+        Attempts to send the '/relay' command.
+        Includes a debounce to prevent double-typing during race conditions.
         """
+        current_time = time.time()
+        
         async with self.state.moderation_lock:
+            # 1. Check if we already flagged it as sent
             if not self.state or self.state.relay_command_sent:
                 return True
             
+            # 2. NEW: Check if we physically sent it very recently (Debounce)
+            # If we sent it less than 3 seconds ago, assume the other task handled it.
+            if (current_time - self.state.last_relay_timestamp) < 3.0:
+                logger.info("Relay command skipped (Debounce: Sent too recently).")
+                self.state.relay_command_sent = True # Ensure flag is synced
+                return True
+
+            # Mark as sent and update timestamp
             self.state.relay_command_sent = True 
+            self.state.last_relay_timestamp = current_time # <--- Update timestamp
+            
             logger.info("Processing auto-relay and auto-volume checks...")
 
         # --- 1. Handle Auto Relay ---
@@ -312,7 +325,15 @@ class OmegleHandler:
                             logger.warning("Could not find chat input text area.")
                             return False
 
-                        # Type command and press ENTER
+                        # 1. Send /stop command first
+                        chat_input.clear()
+                        chat_input.send_keys("/stop")
+                        time.sleep(0.1)
+                        chat_input.send_keys(Keys.RETURN)
+
+                        time.sleep(0.25)  # Brief pause between commands
+
+                        # 2. Send /relay command
                         chat_input.clear()
                         chat_input.send_keys("/relay")
                         time.sleep(0.1)
@@ -753,12 +774,21 @@ class OmegleHandler:
             if checkboxes_clicked:
                 logger.info("Checkboxes detected and clicked. Waiting an additional 5.3s...")
                 await asyncio.sleep(5.3)
+
+            # --- ADDED FIX: Reset Relay Flag after Redirect ---
+            # Since we reloaded the page, we must force the bot to send /relay and set volume again.
+            if self.state:
+                async with self.state.moderation_lock:
+                    self.state.relay_command_sent = False
+                logger.info("Redirect detected. Reset 'relay_command_sent' flag to ensure Setup runs.")
+            # --------------------------------------------------
         
         # 2. DELAY 3: User requested 0.5s delay BEFORE the skip keys
         await asyncio.sleep(0.5)
 
         # 3. Perform Relay/Vol Adjust BEFORE skipping (User Request)
-        # We run this unconditionally before the keys to ensure volume is set
+        # We run this unconditionally before the keys to ensure volume is set.
+        # Thanks to the fix above, this will now run even after a redirect.
         await self._attempt_send_relay()
 
         # 4. Perform Skip Keys (Esc Esc) - This opens the chat box/skips

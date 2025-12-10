@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+from helper import BotHelper, PersistentVoteView
 from datetime import datetime, timezone, timedelta, time as dt_time
 from functools import wraps
 from typing import Any, Callable, Optional
@@ -368,7 +369,7 @@ async def global_skip() -> None:
         # 3. Send the announcement (if channel was found)
         if channel:
             announcement_content = f'**{author_name}** used `{command_name}`'
-            await channel.send(announcement_content, delete_after=30.0)
+            await channel.send(announcement_content, delete_after=10.0)
             logger.info(f'Announced global hotkey use: {author_name} used {command_name}')
 
         # 4. Record stats (just like the button does)
@@ -468,11 +469,15 @@ async def ensure_voice_connection() -> bool:
     if not target_vc or not isinstance(target_vc, discord.VoiceChannel):
         logger.error(f'STREAMING_VC_ID ({bot_config.STREAMING_VC_ID}) is invalid or not a voice channel.')
         return False
+    
+    # --- Case 1: Already Connected Correctly ---
     voice_client = guild.voice_client
     if voice_client and voice_client.is_connected() and (voice_client.channel == target_vc):
         logger.debug('Ensure VC: Already connected correctly (Case 1).')
         bot.voice_client_music = voice_client
         return True
+
+    # --- Case 2: Connected but Wrong Channel ---
     if voice_client and voice_client.is_connected() and (voice_client.channel != target_vc):
         logger.info(f'Ensure VC: Connected to wrong channel ({voice_client.channel.name}). Moving... (Case 2)')
         try:
@@ -486,9 +491,12 @@ async def ensure_voice_connection() -> bool:
                 await voice_client.disconnect(force=True)
             except Exception as dis_e:
                 logger.error(f'Ensure VC: Error during disconnect after move failure: {dis_e}')
+
+    # --- Case 3: New Connection (With Zombie Handling) ---
     logger.info(f'Ensure VC: Attempting connection... (Case 3)')
     error_to_report = None
     try:
+        # Pre-check: If the library thinks we are connected but we reached here, handle it.
         if guild.voice_client and guild.voice_client.is_connected():
             logger.warning('Ensure VC: Bot connected unexpectedly before await connect(). Using existing.')
             bot.voice_client_music = guild.voice_client
@@ -496,37 +504,59 @@ async def ensure_voice_connection() -> bool:
                 logger.info(f'Ensure VC: Moving unexpected connection from {bot.voice_client_music.channel.name}.')
                 await bot.voice_client_music.move_to(target_vc)
             return True
+
+        # Attempt fresh connection
         bot.voice_client_music = await target_vc.connect(reconnect=True, timeout=60.0)
         logger.info(f'Ensure VC: New connection successful to {target_vc.name}.')
         return True
+
     except ClientException as e:
         logger.debug(f'Ensure VC: Caught ClientException: {type(e).__name__} - {e}')
+        
+        # --- ZOMBIE CHECK FIX ---
         if 'Already connected' in str(e):
-            logger.warning(f"Ensure VC: Race condition ('Already connected') caught. Retrieving existing client...")
+            logger.warning(f"Ensure VC: Race condition ('Already connected') caught. Checking existing client status...")
             
-            # Don't check .is_connected(). Just get the client object.
-            # guild.voice_client is the "official" way to get the client for a guild.
             existing_client = guild.voice_client 
             
             if existing_client:
-                logger.info('Ensure VC: Successfully retrieved existing voice client.')
-                # This is the crucial state sync
-                bot.voice_client_music = existing_client 
-                
-                # Now, just make sure it's in the right channel.
-                if bot.voice_client_music.channel != target_vc:
-                    logger.warning(f'Ensure VC: Existing client in wrong channel ({bot.voice_client_music.channel.name}). Moving...')
+                # CRITICAL CHECK: Is it actually connected?
+                if existing_client.is_connected():
+                    logger.info('Ensure VC: Retrieved existing client and verified it IS connected.')
+                    bot.voice_client_music = existing_client 
+                    
+                    # Handle channel mismatch if necessary
+                    if bot.voice_client_music.channel != target_vc:
+                        logger.warning(f'Ensure VC: Existing client in wrong channel ({bot.voice_client_music.channel.name}). Moving...')
+                        try:
+                            await bot.voice_client_music.move_to(target_vc)
+                            logger.info('Ensure VC: Move successful.')
+                        except Exception as move_e:
+                            logger.error(f'Ensure VC: Move failed: {move_e}')
+                            # If move fails, kill it and let the failsafe below retry
+                            await existing_client.disconnect(force=True)
+                            bot.voice_client_music = None
+                            return False
+                    
+                    return True
+                else:
+                    # It is a ZOMBIE. It exists in memory but the socket is dead.
+                    logger.warning("Ensure VC: Existing client found but .is_connected() is FALSE. It is a zombie. Killing it.")
                     try:
-                        await bot.voice_client_music.move_to(target_vc)
-                        logger.info('Ensure VC: Move successful.')
-                    except Exception as move_e:
-                        logger.error(f'Ensure VC: Move failed: {move_e}')
-                
-                return True # We have a client and it's (now) in the right channel
-            
+                        await existing_client.disconnect(force=True)
+                    except Exception:
+                        pass
+                    
+                    # Retry connection immediately after killing the zombie
+                    try:
+                        bot.voice_client_music = await target_vc.connect(reconnect=True, timeout=60.0)
+                        logger.info("Ensure VC: Successfully reconnected after killing zombie client.")
+                        return True
+                    except Exception as retry_e:
+                        logger.error(f"Ensure VC: Failed to reconnect after killing zombie: {retry_e}")
+                        error_to_report = retry_e
             else:
-                # The library thinks we are connected, but the client object is missing.
-                # This is a critical desync. We must fail immediately so the calling function stops.
+                # Library says connected, but client object is None. Desync.
                 logger.critical("Ensure VC: 'Already connected' error, but guild.voice_client is None! Bot is in a ghost state.")
                 bot.voice_client_music = None
                 return False 
@@ -534,11 +564,14 @@ async def ensure_voice_connection() -> bool:
             logger.error(f'Ensure VC: Reporting non-race ClientException.', exc_info=True)
             error_to_report = e
             logger.debug(f'Ensure VC: error_to_report set to: {error_to_report}')
+
     except Exception as e:
         logger.debug(f'Ensure VC: Caught generic Exception: {type(e).__name__} - {e}')
         logger.error(f'Ensure VC: Reporting generic Exception.', exc_info=True)
         error_to_report = e
         logger.debug(f'Ensure VC: error_to_report set to: {error_to_report}')
+
+    # --- Error Reporting (Only if we didn't recover) ---
     logger.debug(f'Ensure VC: Reached error reporting block. error_to_report = {repr(error_to_report)}')
     if error_to_report:
         logger.debug(f"Ensure VC: Condition 'if error_to_report' is TRUE. Preparing to send message.")
@@ -562,6 +595,8 @@ async def ensure_voice_connection() -> bool:
                 logger.debug(f'Ensure VC: Error reporting cooldown active. Skipping message send.')
     else:
         logger.debug(f"Ensure VC: Condition 'if error_to_report' is FALSE. Skipping message send.")
+
+    # --- Final Failsafe Check ---
     if guild.voice_client and guild.voice_client.is_connected():
         logger.info('Ensure VC: Failsafe check found a valid connection.')
         bot.voice_client_music = guild.voice_client
@@ -574,6 +609,7 @@ async def ensure_voice_connection() -> bool:
                 return True
             except Exception as final_move_e:
                 logger.error(f'Ensure VC: Failsafe move failed: {final_move_e}')
+
     bot.voice_client_music = None
     return False
 async def scan_and_shuffle_music() -> int:
@@ -1014,8 +1050,39 @@ def require_allowed_user():
     return commands.check(predicate)
 async def _handle_stream_vc_join(member: discord.Member):
     async with state.moderation_lock:
-        if member.id in state.users_received_rules or member.id in state.users_with_dms_disabled or member.id in state.failed_dm_users:
+        # This check ensures we only run this logic for users who haven't been processed before
+        # (This relies on you clearing the JSON file as you mentioned)
+        if member.id in state.users_received_rules:
             return
+
+    # --- NICKNAME CHANGE LOGIC (First Time Only) ---
+    if bot_config.AUTO_NICKNAME:
+        try:
+            suffix = bot_config.NICKNAME_TAG
+            current_nick = member.display_name
+            
+            # Only change if they don't already have the suffix
+            if suffix and (not current_nick.endswith(suffix)):
+                # Discord nickname limit is 32 chars. We trim the name to fit the suffix.
+                max_name_length = 32 - len(suffix)
+                new_nick = f"{current_nick[:max_name_length]}{suffix}"
+                
+                await member.edit(nick=new_nick)
+                logger.info(f"Updated nickname for new VC joiner {member.name} to: {new_nick}")
+        except discord.Forbidden:
+            logger.warning(f"Could not change nickname for {member.name} (Bot missing permissions or user is owner/admin).")
+        except Exception as e:
+            logger.error(f"Failed to change nickname for {member.name}: {e}")
+    # -----------------------------------------------
+
+    # --- EXISTING DM LOGIC ---
+    # We check the DM blockers here separately so nickname logic can run even if DMs fail previously
+    async with state.moderation_lock:
+        if member.id in state.users_with_dms_disabled or member.id in state.failed_dm_users:
+            # Add to rules list so we don't try to nick change them again next time
+            state.users_received_rules.add(member.id) 
+            return
+
     try:
         await member.send(bot_config.RULES_MESSAGE)
         async with state.moderation_lock:
@@ -1025,6 +1092,8 @@ async def _handle_stream_vc_join(member: discord.Member):
         async with state.moderation_lock:
             state.users_with_dms_disabled.add(member.id)
             state.failed_dm_users.add(member.id)
+            # Mark as received so we don't loop logic next time
+            state.users_received_rules.add(member.id) 
         logger.warning(f'Could not DM {member.display_name} (DMs disabled or blocked).')
     except Exception as e:
         async with state.moderation_lock:
@@ -1224,6 +1293,18 @@ async def on_ready() -> None:
     try:
         await load_state_async()
         logger.info('State loaded successfully')
+
+        # --- FIX & REFRESH LOGIC ---
+        # 1. Register the view class so Discord knows it exists
+        # Note: We use PersistentVoteView directly (imported above), passing 'helper' (the instance) to it
+        bot.add_view(PersistentVoteView(helper))
+        
+        # 2. Refresh active vote messages to ensure buttons are clickable
+        if hasattr(state, 'active_votes') and state.active_votes:
+            logger.info("Triggering refresh of active vote buttons...")
+            asyncio.create_task(helper.refresh_active_votes())
+        # ---------------------------
+
     except Exception as e:
         logger.error(f'Error loading state: {e}', exc_info=True)
     try:
@@ -1239,6 +1320,12 @@ async def on_ready() -> None:
             smart_timeout_monitor.start()
             logger.info('Smart Timeout Monitor started.')
         # --------------------------------------
+
+        # --- ADDED VOTE CHECKER START HERE ---
+        if not check_active_votes_task.is_running():
+            check_active_votes_task.start()
+            logger.info('Vote expiration checker started.')
+        # -------------------------------------
 
         if not periodic_geometry_save.is_running():
             periodic_geometry_save.start()
@@ -1297,6 +1384,59 @@ async def on_ready() -> None:
         bot.is_fully_ready = True
     except Exception as e:
         logger.error(f'Error during on_ready: {e}', exc_info=True)
+
+@bot.command(name='endvote', aliases=['stopvote'])
+@require_allowed_user()
+@handle_errors
+async def endvote(ctx):
+    # 1. Try to find a vote in the current channel
+    msg_id = helper.get_active_vote_in_channel(ctx.channel.id)
+    
+    if not msg_id:
+        await ctx.send("❌ No active votes found in this channel.", delete_after=5)
+        return
+
+    # 2. Force end the vote
+    # This calls the existing end_vote logic which calculates results and posts the graphs
+    await helper.end_vote(msg_id)
+    
+    # 3. Confirm action (optional, as the results will pop up)
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+
+@tasks.loop(minutes=1)
+async def check_active_votes_task():
+    # Use bot.state to ensure we have the freshest reference after reboots
+    if not hasattr(bot.state, 'active_votes'): 
+        return
+    
+    current_ts = datetime.now(timezone.utc).timestamp()
+    
+    # Copy keys to list to avoid "dictionary changed size during iteration" errors
+    active_ids = list(bot.state.active_votes.keys())
+    
+    for msg_id in active_ids:
+        try:
+            # Double check existence inside the loop (in case it was just deleted)
+            if msg_id not in bot.state.active_votes:
+                continue
+
+            vote_data = bot.state.active_votes[msg_id]
+            
+            if current_ts > vote_data["end_time"]:
+                logger.info(f"Vote {msg_id} expired. Ending now.")
+                # The helper logic will handle the actual ending
+                await helper.end_vote(msg_id)
+                
+        except Exception as e:
+            # Catch errors for THIS vote so the loop continues for OTHER votes
+            logger.error(f"Error checking/ending vote {msg_id}: {e}", exc_info=True)
+
+@check_active_votes_task.before_loop
+async def before_vote_check():
+    await bot.wait_until_ready()
 @bot.event
 @handle_errors
 async def on_member_join(member: discord.Member) -> None:
@@ -1506,6 +1646,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     # --- Time Tracking Logic ---
     async with state.vc_lock:
         if is_now_in_streaming_vc and (not was_in_streaming_vc):
+            # --- NEW: Trigger First Join Logic (Nickname + Rules) ---
+            if member.id not in bot_config.ALLOWED_USERS and not member.bot:
+                asyncio.create_task(_handle_stream_vc_join(member))
+            # --------------------------------------------------------
+
             if member.id not in state.active_vc_sessions:
                 state.active_vc_sessions[member.id] = time.time()
                 if member.id not in state.vc_time_data:
@@ -2113,6 +2258,20 @@ async def shutdown(ctx) -> None:
         except discord.HTTPException:
             pass
     await _initiate_shutdown(ctx)
+
+@bot.command(name='vote')
+@require_allowed_user()
+@handle_errors
+async def vote(ctx, *, args: str = ""):
+    await helper.start_vote(ctx, args)
+
+@vote.error
+async def vote_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Usage: `!vote <hours> <@user> <@role> ...`")
+    else:
+        logger.error(f"Error in vote command: {error}")
+
 @bot.command(name='disableomegle')
 @require_allowed_user()
 @handle_errors
@@ -3447,6 +3606,26 @@ async def display_error(ctx, error: Exception) -> None:
     else:
         logger.error(f'Error in display command: {error}', exc_info=True)
         await ctx.send('An unexpected error occurred.')
+@bot.command(name='timer')
+@require_user_preconditions()
+@handle_errors
+async def timer(ctx, minutes: int = None):
+    # Pass the argument to the helper
+    await helper.start_user_timer(ctx, minutes)
+
+@timer.error
+async def timer_error(ctx, error):
+    # Handle cases where user types "!timer abc" instead of a number
+    if isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Please enter a valid number for the timer (e.g., `!timer 10`).", delete_after=10)
+    # Handle unexpected errors using the standard logger
+    else:
+        logger.error(f"Error in timer command: {error}")
+@bot.command(name='timerstop')
+@require_user_preconditions()
+@handle_errors
+async def timerstop(ctx):
+    await helper.stop_user_timer(ctx)
 @bot.command(name='move')
 @handle_errors
 async def move(ctx, member: discord.Member):
@@ -3509,7 +3688,7 @@ async def move(ctx, member: discord.Member):
 @move.error
 async def move_error(ctx, error: Exception) -> None:
     if isinstance(error, commands.MemberNotFound):
-        await ctx.send(f'Could not find a member in this server with the input: `{error.argument}`')
+        await ctx.send(f'Could not find user, try !display @username OR UserID: `{error.argument}`')
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send('Usage: `!move <@user or user_id>`')
     elif isinstance(error, commands.CheckFailure):

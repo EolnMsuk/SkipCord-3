@@ -5,11 +5,14 @@ import discord
 import math
 import os
 import time
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Optional, Union, List, Tuple
 
 from discord.ext import commands
 from discord.ui import View, Button
+from discord import ButtonStyle, SelectOption
+from discord.ui import Select
 from loguru import logger
 
 from tools import (
@@ -125,8 +128,140 @@ def create_message_chunks(
 
     return chunks
 
+class VotingBoothView(discord.ui.View):
+    """
+    Ephemeral view that lets a user cycle through targets.
+    """
+    def __init__(self, helper, message_id: int, targets: dict, voter_id: int):
+        super().__init__(timeout=180) # 3 minutes to vote before closing booth
+        self.helper = helper
+        self.message_id = message_id
+        self.targets = list(targets.items()) # List of (id, name)
+        self.voter_id = voter_id
+        self.current_index = 0
+        
+        # Load existing progress
+        current_votes = self.helper.state.active_votes[message_id]["votes"]
+        # Find the first target this user hasn't voted on yet
+        for i, (tid, _) in enumerate(self.targets):
+            tid_str = str(tid)
+            if str(voter_id) not in current_votes.get(tid_str, {}):
+                self.current_index = i
+                break
+        else:
+            # User voted on everyone
+            self.current_index = len(self.targets)
 
-# --- Button & View Logic ---
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.clear_items()
+        if self.current_index < len(self.targets):
+            target_id, target_name = self.targets[self.current_index]
+            
+            # 1. Add SMASH Button First
+            smash_btn = discord.ui.Button(label="SMASH", style=discord.ButtonStyle.success, emoji="🔥", custom_id="vote_smash")
+            smash_btn.callback = self.smash_callback
+            self.add_item(smash_btn)
+
+            # 2. Add PASS Button Second
+            pass_btn = discord.ui.Button(label="PASS", style=discord.ButtonStyle.danger, emoji="🚮", custom_id="vote_pass")
+            pass_btn.callback = self.pass_callback
+            self.add_item(pass_btn)
+
+            # 3. Add Target Name Label Last (Disabled Button)
+            self.add_item(discord.ui.Button(
+                label=f"Target {self.current_index + 1}/{len(self.targets)}: {target_name}", 
+                style=discord.ButtonStyle.secondary, 
+                disabled=True
+            ))
+
+        else:
+            self.add_item(discord.ui.Button(label="✅ All Votes Cast!", style=discord.ButtonStyle.success, disabled=True))
+
+    async def handle_vote(self, interaction: discord.Interaction, choice: str):
+        # --- Guard Clause for Race Conditions/Double Clicks ---
+        if self.current_index >= len(self.targets):
+            # If the user double-clicked the last button, we are already "done".
+            # Just refresh the view to show the "All Votes Cast" button and stop.
+            self.update_buttons()
+            await interaction.response.edit_message(content="**You have already voted on all users.**", view=self)
+            return
+        # -----------------------------------------------------------
+
+        target_id, _ = self.targets[self.current_index]
+        target_id_str = str(target_id)
+        voter_id_str = str(self.voter_id)
+        
+        async with self.helper.state.moderation_lock:
+            # Ensure vote structure exists
+            if target_id_str not in self.helper.state.active_votes[self.message_id]["votes"]:
+                self.helper.state.active_votes[self.message_id]["votes"][target_id_str] = {}
+            
+            # Record Vote
+            self.helper.state.active_votes[self.message_id]["votes"][target_id_str][voter_id_str] = choice
+        
+        self.current_index += 1
+        self.update_buttons()
+        
+        if self.current_index >= len(self.targets):
+            await interaction.response.edit_message(content="**Thanks for voting!** You have voted on all users.", view=self)
+             
+            # Announce completion in the main channel
+            try:
+                # Retrieve channel ID from state using the message ID
+                vote_data = self.helper.state.active_votes.get(self.message_id)
+                if vote_data:
+                    channel_id = vote_data["channel_id"]
+                    channel = self.helper.bot.get_channel(channel_id)
+                    if channel:
+                        await channel.send(f"🎉 {interaction.user.mention} has finished voting on the Smash or Pass!")
+            except Exception as e:
+                logger.error(f"Failed to send vote completion announcement: {e}")
+        else:
+             await interaction.response.edit_message(view=self)
+
+    async def smash_callback(self, interaction):
+        await self.handle_vote(interaction, "smash")
+
+    async def pass_callback(self, interaction):
+        await self.handle_vote(interaction, "pass")
+
+
+class PersistentVoteView(discord.ui.View):
+    """
+    The main 'Start Voting' button that stays on the message.
+    """
+    def __init__(self, helper):
+        super().__init__(timeout=None) # Persistent
+        self.helper = helper
+
+    # ENSURE custom_id IS SET HERE
+    @discord.ui.button(label="🗳️ Enter Voting Booth", style=discord.ButtonStyle.primary, custom_id="enter_voting_booth")
+    async def enter_booth(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ... your existing logic ...
+        message_id = interaction.message.id
+        
+        if message_id not in self.helper.state.active_votes:
+            await interaction.response.send_message("❌ This vote has ended or expired.", ephemeral=True)
+            return
+
+        vote_data = self.helper.state.active_votes[message_id]
+        targets = vote_data["targets"]
+        
+        # Check time
+        if datetime.now(timezone.utc).timestamp() > vote_data["end_time"]:
+            await interaction.response.send_message("🛑 Voting time is up!", ephemeral=True)
+            return
+
+        view = VotingBoothView(self.helper, message_id, targets, interaction.user.id)
+        
+        # --- CHANGED: Removed the vote counting logic and simplified the message ---
+        await interaction.response.send_message(
+            "Use the buttons below to vote anonymously.", 
+            view=view, 
+            ephemeral=True
+        )
 
 async def _button_callback_handler(
     interaction: discord.Interaction, command: str, helper: "BotHelper"
@@ -820,6 +955,278 @@ class BotHelper:
 
     # --- Event Handlers ---
 
+    def get_active_vote_in_channel(self, channel_id: int) -> Optional[int]:
+        """Finds the message ID of the most recent active vote in a specific channel."""
+        if not hasattr(self.state, 'active_votes') or not self.state.active_votes:
+            return None
+            
+        # Filter votes that belong to this channel
+        matches = [
+            mid for mid, data in self.state.active_votes.items() 
+            if data["channel_id"] == channel_id
+        ]
+        
+        if not matches:
+            return None
+            
+        # Return the largest ID (which corresponds to the newest message)
+        return max(matches)
+
+    async def refresh_active_votes(self):
+        """
+        Iterates through all active votes in state and refreshes the view
+        on the actual Discord messages to ensure buttons work after reboot.
+        """
+        if not self.state.active_votes:
+            return
+
+        logger.info(f"Refreshing {len(self.state.active_votes)} active vote messages...")
+        
+        # We need a fresh view instance. 
+        # Since we are inside helper.py, we can access PersistentVoteView directly.
+        # We pass 'self' because 'self' IS the helper instance.
+        view = PersistentVoteView(self)
+        
+        ids_to_remove = []
+
+        for message_id, data in self.state.active_votes.items():
+            channel_id = data.get("channel_id")
+            if not channel_id:
+                ids_to_remove.append(message_id)
+                continue
+
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                # If channel is None, the bot might not have cached it yet or it was deleted.
+                # We skip for now to be safe.
+                continue
+
+            try:
+                # Fetch the message
+                msg = await channel.fetch_message(message_id)
+                
+                # Editing the message with the view forces Discord to re-bind the buttons
+                await msg.edit(view=view)
+                logger.info(f"Refreshed buttons for vote message {message_id}")
+                
+                # Small sleep to prevent rate limits
+                await asyncio.sleep(0.5)
+                
+            except discord.NotFound:
+                logger.warning(f"Vote message {message_id} not found. Removing from state.")
+                ids_to_remove.append(message_id)
+            except discord.Forbidden:
+                logger.warning(f"No permission to edit vote message {message_id}.")
+            except Exception as e:
+                logger.error(f"Failed to refresh vote {message_id}: {e}")
+
+        # Cleanup deleted messages from state
+        if ids_to_remove:
+            async with self.state.moderation_lock:
+                for mid in ids_to_remove:
+                    self.state.active_votes.pop(mid, None)
+            if self.save_state:
+                await self.save_state()
+
+    @handle_errors
+    async def start_vote(self, ctx, args: str):
+        """!vote command implementation."""
+        record_command_usage(self.state.analytics, "!vote")
+        record_command_usage_by_user(self.state.analytics, ctx.author.id, "!vote")
+
+        # Use shlex to handle quoted arguments correctly if needed, but split is fine for mentions
+        args_list = args.split()
+        if not args_list:
+            await ctx.send("Usage: `!vote <hours> <@user1> <@role1> ...`")
+            return
+
+        try:
+            duration = float(args_list[0])
+            if duration <= 0 or duration > 48: raise ValueError
+        except ValueError:
+            await ctx.send("❌ Invalid duration (0.1 - 48 hours).")
+            return
+
+        # --- NEW TARGET COLLECTION LOGIC ---
+        targets = {} # {id: Name} (Dicts preserve insertion order in Python 3.7+)
+        
+        # Regex to identify mentions
+        user_pattern = re.compile(r'<@!?(\d+)>')
+        role_pattern = re.compile(r'<@&(\d+)>')
+
+        # Iterate through arguments starting from the second one (skipping duration)
+        for arg in args_list[1:]:
+            
+            # 1. Check if it is a User Mention
+            u_match = user_pattern.match(arg)
+            if u_match:
+                uid = int(u_match.group(1))
+                member = ctx.guild.get_member(uid)
+                if member and not member.bot:
+                    if member.id not in targets:
+                        targets[member.id] = member.display_name
+                continue
+
+            # 2. Check if it is a Role Mention OR Role Name
+            role = None
+            r_match = role_pattern.match(arg)
+            
+            if r_match:
+                # It's a role mention <@&ID>
+                rid = int(r_match.group(1))
+                role = ctx.guild.get_role(rid)
+            else:
+                # It's a text name (e.g., "Admin")
+                # We search for the role by name (case insensitive)
+                for r in ctx.guild.roles:
+                    if r.name.lower() == arg.lower():
+                        role = r
+                        break
+            
+            # If a role was found, add its members
+            if role:
+                # Get non-bot members
+                role_members = [m for m in role.members if not m.bot]
+                
+                # --- SORTING: Alphabetical by Nickname (Display Name) ---
+                role_members.sort(key=lambda m: m.display_name.lower())
+                
+                for member in role_members:
+                    # Only add if not already in the list (deduplication)
+                    if member.id not in targets:
+                        targets[member.id] = member.display_name
+
+        if not targets:
+            await ctx.send("❌ No valid users found. Please mention users or roles.")
+            return
+
+        # --- Create View & Embed (Same as before) ---
+        view = PersistentVoteView(self)
+        end_time = datetime.now(timezone.utc) + timedelta(hours=duration)
+        end_ts = end_time.timestamp()
+
+        # Build Description
+        # REMOVED: List generation logic to keep message short.
+
+        desc = (
+            f"**Time Remaining:** <t:{int(end_ts)}:R>\n"
+            f"**Total Candidates:** {len(targets)}\n\n"
+            f"👇 **Click the button below to vote privately!**"
+        )
+
+        embed = discord.Embed(title="🗳️ Smash or Pass Vote", description=desc, color=discord.Color.gold())
+
+        msg = await ctx.send(embed=embed, view=view)
+
+        # SAVE TO STATE
+        async with self.state.moderation_lock:
+            self.state.active_votes[msg.id] = {
+                "channel_id": ctx.channel.id,
+                "end_time": end_ts,
+                "targets": {str(k): v for k, v in targets.items()},
+                "votes": {},
+                "duration_hours": duration
+            }
+        
+        if self.save_state: await self.save_state()
+        logger.info(f"Started persistent vote {msg.id}")
+
+    async def end_vote(self, message_id: int):
+        """Finalizes a vote, shows graphs, and cleans up state."""
+        # 1. Check if vote exists in state
+        if message_id not in self.state.active_votes: 
+            return
+        
+        data = self.state.active_votes[message_id]
+        channel_id = data["channel_id"]
+        
+        # 2. Robust Channel Fetching (Fixes Reboot Issue)
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            try:
+                # If cache miss, try fetching from API
+                channel = await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden):
+                # Only delete if we receive a definitive error that it's gone/inaccessible
+                logger.warning(f"Channel {channel_id} not found or forbidden. Cleaning up vote {message_id}.")
+                async with self.state.moderation_lock:
+                    self.state.active_votes.pop(message_id, None)
+                return
+            except Exception as e:
+                # If a temporary error (network), log it and RETURN. 
+                # Do NOT delete the vote; try again next loop.
+                logger.error(f"Temporary error fetching channel for vote {message_id}: {e}")
+                return
+
+        # Calculate Results
+        targets = data["targets"]
+        votes_map = data["votes"]
+        results = []
+
+        for tid, name in targets.items():
+            t_votes = votes_map.get(tid, {})
+            smash = list(t_votes.values()).count("smash")
+            pass_ = list(t_votes.values()).count("pass")
+            total = smash + pass_
+            ratio = (smash / total * 100) if total > 0 else 0
+            results.append({"name": name, "smash": smash, "pass": pass_, "total": total, "ratio": ratio})
+
+        # Sort Lists
+        most_smashed = sorted(results, key=lambda x: (x['smash'], x['ratio']), reverse=True)
+        most_passed = sorted(results, key=lambda x: (x['pass'], -x['ratio']), reverse=True)
+
+        # Bar for Smash (Green -> Red)
+        def make_smash_bar(val, max_val):
+            if max_val == 0: return "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜"
+            filled = int((val / max_val) * 10)
+            return "🟩" * filled + "🟥" * (10 - filled)
+
+        # Bar for Pass (Red -> Green)
+        def make_pass_bar(val, max_val):
+            if max_val == 0: return "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜"
+            filled = int((val / max_val) * 10)
+            return "🟥" * filled + "🟩" * (10 - filled)
+
+        # 1. Smash Results Embed
+        embed_s = discord.Embed(title="🔥 Vote Results: Most Smashed", color=discord.Color.green())
+        desc_s = []
+        
+        for i, res in enumerate(most_smashed[:15], 1): 
+            bar = make_smash_bar(res['smash'], res['total'] if res['total'] > 0 else 1)
+            desc_s.append(f"`#{i}` **{res['name']}**\n{bar} **{int(res['ratio'])}%** ({res['smash']} S / {res['pass']} P)")
+        embed_s.description = "\n".join(desc_s) or "No votes cast."
+
+        # 2. Pass Results Embed
+        embed_p = discord.Embed(title="🚮 Vote Results: Most Passed", color=discord.Color.red())
+        desc_p = []
+        
+        for i, res in enumerate(most_passed[:15], 1):
+            pass_ratio = 100 - res['ratio']
+            bar = make_pass_bar(res['pass'], res['total'] if res['total'] > 0 else 1)
+            desc_p.append(f"`#{i}` **{res['name']}**\n{bar} **{int(pass_ratio)}%** ({res['smash']} S / {res['pass']} P)")
+        embed_p.description = "\n".join(desc_p) or "No votes cast."
+
+        try:
+            # Edit original message to show ended
+            msg = await channel.fetch_message(message_id)
+            orig_embed = msg.embeds[0]
+            orig_embed.title = "🔴 Vote Ended"
+            orig_embed.color = discord.Color.dark_grey()
+            await msg.edit(embed=orig_embed, view=None) # Remove buttons
+            
+            # Send Results
+            await channel.send(embed=embed_s)
+            await channel.send(embed=embed_p)
+        except Exception as e:
+            logger.error(f"Error sending vote results: {e}")
+
+        # Cleanup
+        async with self.state.moderation_lock:
+            # Use .pop to be safe against key errors
+            self.state.active_votes.pop(message_id, None)
+        
+        if self.save_state: await self.save_state()
+
     @handle_errors
     async def handle_member_join(self, member: discord.Member) -> None:
         """Called by on_member_join event."""
@@ -1509,6 +1916,8 @@ class BotHelper:
             "`!refresh` - Refreshes the Omegle page.\n"
             "`!info` - Shows server info/rules.\n"
             "`!rules` - Shows the server rules.\n"
+            "`!timer <1-60>` - Starts a timer (minutes).\n"
+            "`!timerstop` - Stops current user timer.\n"
             "`!mskip` - Skips the current song.\n"
             "`!mpp` - Toggles music play and pause.\n"
             "`!vol 1-100` - Sets music volume (0-100).\n"
@@ -2506,6 +2915,11 @@ class BotHelper:
                 logger.info(
                     f"`!whois` data cleared by {ctx.author.name} (ID: {ctx.author.id})"
                 )
+                
+                # --- NEW LINE ADDED BELOW ---
+                asyncio.create_task(self.update_timeouts_report_menu())
+                # ----------------------------
+
                 if self.save_state:
                     await self.save_state()
             else:
@@ -2980,3 +3394,72 @@ class BotHelper:
         view = QueueView(self.bot, self.state, ctx.author)
         await view.start()
         view.message = await ctx.send(content=view.get_content(), view=view)
+        
+    @handle_errors
+    async def start_user_timer(self, ctx, minutes: Optional[int] = None) -> None:
+        """!timer command implementation."""
+        record_command_usage(self.state.analytics, "!timer")
+        record_command_usage_by_user(self.state.analytics, ctx.author.id, "!timer")
+
+        # 1. Check if argument was provided
+        if minutes is None:
+            await ctx.send(f"⚠️ Usage: `!timer <minutes>` (e.g., `!timer 20`).", delete_after=10)
+            return
+
+        # 2. Validate Duration (1-60)
+        if not 1 <= minutes <= 60:
+            await ctx.send("❌ Invalid duration. Please enter a number between 1 and 60.", delete_after=10)
+            return
+
+        # 3. Check for existing timer and Register Task
+        async with self.state.moderation_lock:
+            if ctx.author.id in self.state.active_user_timers:
+                await ctx.send(f"{ctx.author.mention} you already have an active timer. Use `!timerstop` to cancel it first.", delete_after=10)
+                return
+            
+            # Store the current task so !timerstop can cancel it later
+            self.state.active_user_timers[ctx.author.id] = asyncio.current_task()
+
+        try:
+            # 4. Confirm and Start Wait
+            await ctx.send(f"✅ Timer set for **{minutes} minutes**. I will ping you when it is up!")
+            
+            # Sleep for the duration
+            await asyncio.sleep(minutes * 60)
+
+            # 5. Timer Finished
+            await ctx.send(f"⏰ {ctx.author.mention} your **{minutes} minute** timer is up!")
+
+        except asyncio.CancelledError:
+            # This block runs when !timerstop is used
+            logger.info(f"Timer for {ctx.author.name} was cancelled via !timerstop.")
+            raise # Re-raise to ensure proper task cancellation propagation
+
+        except Exception as e:
+            logger.error(f"Error in timer logic: {e}")
+            await ctx.send("❌ An error occurred with your timer.", delete_after=10)
+
+        finally:
+            # 6. Cleanup: Remove user from active dict when done/cancelled/failed
+            async with self.state.moderation_lock:
+                self.state.active_user_timers.pop(ctx.author.id, None)
+
+    @handle_errors
+    async def stop_user_timer(self, ctx) -> None:
+        """!timerstop command implementation."""
+        record_command_usage(self.state.analytics, "!timerstop")
+        record_command_usage_by_user(self.state.analytics, ctx.author.id, "!timerstop")
+
+        async with self.state.moderation_lock:
+            if ctx.author.id not in self.state.active_user_timers:
+                await ctx.send(f"{ctx.author.mention} you do not have an active timer running.", delete_after=10)
+                return
+            
+            # Retrieve the task and cancel it
+            timer_task = self.state.active_user_timers[ctx.author.id]
+            timer_task.cancel()
+            
+            # Remove from dict immediately (redundant vs finally block, but safe)
+            self.state.active_user_timers.pop(ctx.author.id, None)
+
+        await ctx.send(f"✅ {ctx.author.mention} your timer has been cancelled.")
