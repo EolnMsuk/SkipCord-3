@@ -72,6 +72,12 @@ OMEGLE_VOL = 100
 # Location of folder for screenshots (reports and bans)
 SS_LOCATION = "C:\\Users\\username\\Desktop\\screenshots"
 
+# If True, the bot will add a custom tag using NICKNAME_TAG when the user first joins the streaming vc.
+AUTO_NICKNAME = False
+
+# Set to whatever you want to Auto add to the end of users nicknames the first time they join the streaming vc.
+NICKNAME_TAG = " 📷OmegleStream" 
+
 # The FULL path to your Microsoft Edge "Profile" folder. This is crucial for the 
 # browser to remember settings, stay logged into sites, and appear less like a bot.
 #
@@ -198,6 +204,7 @@ GLOBAL_HOTKEY_MVOLDOWN = ""            # The key to trigger the !mvoldown. Uses 
 ENABLE_GLOBAL_MVOLUP = False            # Set to True to enable the !mvolup hotkey, False to disable it.
 
 GLOBAL_HOTKEY_MVOLUP = ""              # The key to trigger the !mvolup. Uses the `keyboard` library format.
+
 
 
 
