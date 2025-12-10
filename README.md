@@ -68,6 +68,8 @@ This bot integrates a group Omegle screenshare to a Discord VC, allowing the VC 
 * `!refresh` - Refreshes the Omegle page.
 * `!info` - Shows server info/rules.
 * `!rules` - Shows the server rules.
+* `!timer <1-60>` - Starts a timer (minutes).
+* `!timerstop` - Stops current user timer.
 * `!mskip` - Skips the current song.
 * `!mpp` - Toggles music play and pause.
 * `!vol 1-100` - Sets music volume (0-100).
@@ -120,6 +122,8 @@ This bot integrates a group Omegle screenshare to a Discord VC, allowing the VC 
 * `!join` - DMs a join invite to all users with an admin role.
 * `!clearstats` - Clears all statistical data.
 * `!clearwhois` - Clears all historical event data.
+* `!vote <roles or users>` - Starts a Smash or Pass vote.
+* `!endvote` - Stops the current Smash or Pass voting system.
 * `!shutdown` - Safely shuts down the bot.
 
 ## ⚙️ Setup & Configuration
