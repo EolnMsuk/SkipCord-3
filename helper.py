@@ -1109,7 +1109,7 @@ class BotHelper:
         # REMOVED: List generation logic to keep message short.
 
         desc = (
-            f"**Time Remaining:** <t:{int(end_ts)}:R>\n"
+            f"**Voting Ends:** <t:{int(end_ts)}:R>\n"
             f"**Total Candidates:** {len(targets)}\n\n"
             f"👇 **Click the button below to vote privately!**"
         )
@@ -3463,5 +3463,6 @@ class BotHelper:
             
             # Remove from dict immediately (redundant vs finally block, but safe)
             self.state.active_user_timers.pop(ctx.author.id, None)
+
 
         await ctx.send(f"✅ {ctx.author.mention} your timer has been cancelled.")
