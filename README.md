@@ -134,7 +134,7 @@ This bot integrates a group Omegle screenshare to a Discord VC, allowing the VC 
   * **Python 3.9+**: Install from [python.org](https://www.python.org/downloads/). Make sure to check **"Add Python to PATH"** during installation.
   * **FFmpeg**: Required for music playback. Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to your system's PATH.
   * **Deno**: Required by the `yt-dlp` music dependency.
-      1.  Install Deno from [deno.land/install](irm https://deno.land/install.ps1 | iex).
+      1.  Install Deno with this command `irm https://deno.land/install.ps1 | iex`
       2.  Ensure the Deno executable is added to your system's `PATH`.
   * **Dependencies**: Open `cmd.exe` or another terminal, then paste and run the following command:
 
