@@ -244,4 +244,5 @@ TIMEOUT_DURATION_THIRD_VIOLATION = 300
 ### Donate
 
   * Author: `https://github.com/EolnMsuk`
+  * Venmo: `https://account.venmo.com/u/eolnmsuk`
   * BTC: `bc1qm06lzkdfule3f7flf4u70xvjrp5n74lzxnnfks`
