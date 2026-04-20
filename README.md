@@ -241,8 +241,8 @@ TIMEOUT_DURATION_THIRD_VIOLATION = 300
   * **Spotify Links**: Check Client ID/Secret in `.env`. Note that playlists are limited to 100 tracks.
   * **VC Errors**: Check the `LOG_GC` channel. Ensure the bot has "Connect" and "Speak" permissions.
 
-### Donate
+### Thanks
 
-  * Author: `https://github.com/EolnMsuk`
-  * Venmo: `https://account.venmo.com/u/eolnmsuk`
-  * BTC: `bc1qm06lzkdfule3f7flf4u70xvjrp5n74lzxnnfks`
+Author: [EolnMsuk](https://github.com/EolnMsuk)
+
+Donate: [BTC](https://www.blockchain.com/explorer/addresses/btc/bc1qm06lzkdfule3f7flf4u70xvjrp5n74lzxnnfks) | [Venmo](https://venmo.com/user/eolnmsuk)
