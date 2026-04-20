@@ -5,7 +5,7 @@ This bot integrates a group Omegle screenshare to a Discord VC, allowing the VC 
   - [Key Features](#-key-features)
   - [Commands](#-command-list)
   - [How to Setup](#%EF%B8%8F-setup--configuration)
-  - [Donate](#donate)
+  - [Developer](#donate)
 
 ## ✨ Key Features
 
@@ -225,7 +225,7 @@ TIMEOUT_DURATION_SECOND_VIOLATION = 60
 TIMEOUT_DURATION_THIRD_VIOLATION = 300
 ```
 
-## Running the Bot
+### Running the Bot
 
 1.  **Important**: Close all running instances of Microsoft Edge.
 2.  Open your terminal, navigate to the folder, and run:
