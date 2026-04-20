@@ -5,7 +5,7 @@ This bot integrates a group Omegle screenshare to a Discord VC, allowing the VC 
   - [Key Features](#-key-features)
   - [Commands](#-command-list)
   - [How to Setup](#%EF%B8%8F-setup--configuration)
-  - [Developer](#donate)
+  - [Donate](#developer)
 
 ## ✨ Key Features
 
