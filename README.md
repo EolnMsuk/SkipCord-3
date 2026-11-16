@@ -243,5 +243,5 @@ TIMEOUT_DURATION_THIRD_VIOLATION = 300
 
 ### Developer
 
-Created by [EolnMsuk](https://github.com/EolnMsuk) → [AntiDarkSword](https://github.com/EolnMsuk/AntiDarkSword/)  
+Created by [EolnMsuk](https://github.com/EolnMsuk) → [SkipCord-3](https://github.com/EolnMsuk/SkipCord-3/)  
 Donate: [BTC](https://www.blockchain.com/explorer/addresses/btc/bc1qm06lzkdfule3f7flf4u70xvjrp5n74lzxnnfks) or [Venmo](https://venmo.com/user/EolnMsuk)
